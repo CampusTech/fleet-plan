@@ -260,8 +260,10 @@ func TestExtractProfileNameFallback(t *testing.T) {
 }
 
 // TestExtractMobileconfigName verifies PayloadDisplayName extraction from plist XML.
-// Fleet uses the top-level PayloadDisplayName (the last occurrence in the file)
-// as the profile identity, not the nested ones inside PayloadContent.
+// Fleet uses the top-level PayloadDisplayName (the one at the root dict, depth 1)
+// as the profile identity, not the nested ones inside PayloadContent. Position
+// within the file is not meaningful — different profile generators emit the
+// top-level PayloadDisplayName before or after PayloadContent.
 func TestExtractMobileconfigName(t *testing.T) {
 	// Top-level PayloadDisplayName after PayloadContent array — should return
 	// the top-level one (last occurrence), not the inner one.
@@ -321,6 +323,33 @@ func TestExtractMobileconfigName(t *testing.T) {
 	name = extractMobileconfigName([]byte(simple))
 	if name != "Simple Profile" {
 		t.Errorf("expected %q, got %q", "Simple Profile", name)
+	}
+
+	// Top-level PayloadDisplayName BEFORE PayloadContent — the order Apple
+	// Configurator emits and what most hand-edited profiles look like.
+	// Earlier extractor used the last occurrence and would have returned
+	// the deepest nested name; now we require depth=1.
+	topFirst := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadDisplayName</key>
+	<string>Zoom Room Activation Code — University of Pennsylvania (Room2)</string>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Zoom Room Activation Code</string>
+		</dict>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Zoom Room Activation Code (Mac)</string>
+		</dict>
+	</array>
+</dict>
+</plist>`
+	name = extractMobileconfigName([]byte(topFirst))
+	if name != "Zoom Room Activation Code — University of Pennsylvania (Room2)" {
+		t.Errorf("top-first ordering: expected the outer PayloadDisplayName, got %q", name)
 	}
 
 	// No PayloadDisplayName at all

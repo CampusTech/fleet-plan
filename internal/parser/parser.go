@@ -888,33 +888,73 @@ func extractProfileName(filePath string) string {
 // PayloadDisplayName) and a top-level PayloadDisplayName. Fleet uses the
 // top-level one as the profile identity.
 //
-// In standard plist layout, the top-level PayloadDisplayName appears AFTER
-// the PayloadContent array, so it's the last occurrence in the file.
+// The order of PayloadDisplayName relative to PayloadContent is not
+// standardized — Apple Configurator emits it before the array, ProfileCreator
+// after, hand-edited files vary. So we can't rely on first/last position;
+// instead we track <dict> nesting depth and only accept PayloadDisplayName
+// at depth 1 (direct child of the root dict; depth 0 is <plist>).
 func extractMobileconfigName(data []byte) string {
 	s := string(data)
-	needle := "<key>PayloadDisplayName</key>"
-	last := ""
+	const needle = "<key>PayloadDisplayName</key>"
 
-	// Find all occurrences and keep the last one — that's the top-level dict entry.
-	remaining := s
+	depth := 0 // <dict> nesting depth, starting at 0 (outside <plist>'s root <dict>).
+	// dictOpen reports whether a <dict> tag at position i is an opening tag
+	// (not self-closing).
+	scanTags := func(seg string) {
+		i := 0
+		for i < len(seg) {
+			lt := strings.IndexByte(seg[i:], '<')
+			if lt < 0 {
+				return
+			}
+			i += lt
+			if strings.HasPrefix(seg[i:], "<dict>") {
+				depth++
+				i += len("<dict>")
+				continue
+			}
+			if strings.HasPrefix(seg[i:], "<dict/>") {
+				// Self-closing — no children; depth unchanged.
+				i += len("<dict/>")
+				continue
+			}
+			if strings.HasPrefix(seg[i:], "</dict>") {
+				depth--
+				i += len("</dict>")
+				continue
+			}
+			// Skip past this tag.
+			gt := strings.IndexByte(seg[i:], '>')
+			if gt < 0 {
+				return
+			}
+			i += gt + 1
+		}
+	}
+
+	cursor := 0
 	for {
-		idx := strings.Index(remaining, needle)
+		idx := strings.Index(s[cursor:], needle)
 		if idx < 0 {
 			break
 		}
-		after := remaining[idx+len(needle):]
-		after = strings.TrimSpace(after)
-		if strings.HasPrefix(after, "<string>") {
-			after = after[len("<string>"):]
-			end := strings.Index(after, "</string>")
-			if end >= 0 {
-				last = strings.TrimSpace(after[:end])
+		absIdx := cursor + idx
+		// Update depth based on every <dict>/</dict> between cursor and this match.
+		scanTags(s[cursor:absIdx])
+		// Skip past the <key>PayloadDisplayName</key> tag itself.
+		cursor = absIdx + len(needle)
+		// At depth 1, this is the top-level dict's PayloadDisplayName.
+		if depth == 1 {
+			after := strings.TrimSpace(s[cursor:])
+			if strings.HasPrefix(after, "<string>") {
+				after = after[len("<string>"):]
+				if end := strings.Index(after, "</string>"); end >= 0 {
+					return strings.TrimSpace(after[:end])
+				}
 			}
 		}
-		remaining = remaining[idx+len(needle):]
 	}
-
-	return last
+	return ""
 }
 
 
