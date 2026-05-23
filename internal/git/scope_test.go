@@ -7,10 +7,18 @@ import (
 )
 
 // writeTeamFile creates a team YAML file in root/teams/ with the given name
-// and optional body content referencing resources.
+// and optional body content referencing resources. The legacy teams/ name
+// is kept here so existing test cases continue exercising backwards compat.
 func writeTeamFile(t *testing.T, root, filename, teamName, body string) {
 	t.Helper()
-	dir := filepath.Join(root, "teams")
+	writeTeamFileIn(t, root, "teams", filename, teamName, body)
+}
+
+// writeTeamFileIn is the same as writeTeamFile but lets the caller pick the
+// directory name (used to exercise the canonical fleets/ layout).
+func writeTeamFileIn(t *testing.T, root, dirName, filename, teamName, body string) {
+	t.Helper()
+	dir := filepath.Join(root, dirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +138,29 @@ func TestResolveScope(t *testing.T) {
 			wantTeams:     []string{"Workstations"},
 			wantTeamCount: 1,
 		},
+		{
+			name: "fleets/ team YAML change resolves team name",
+			setup: func(t *testing.T, root string) {
+				writeTeamFileIn(t, root, "fleets", "infra.yml", "Infrastructure", "")
+			},
+			changedFiles:  []string{"fleets/infra.yml"},
+			wantGlobal:    false,
+			wantTeams:     []string{"Infrastructure"},
+			wantChanged:   []string{"fleets/infra.yml"},
+			wantTeamCount: 1,
+		},
+		{
+			name: "resource change finds referencing fleets/ team",
+			setup: func(t *testing.T, root string) {
+				writeTeamFileIn(t, root, "fleets", "alpha.yml", "Alpha",
+					"controls:\n  scripts:\n    - path: ../scripts/setup.ps1\n")
+			},
+			changedFiles:  []string{"scripts/setup.ps1"},
+			wantGlobal:    false,
+			wantTeams:     []string{"Alpha"},
+			wantChanged:   []string{"scripts/setup.ps1"},
+			wantTeamCount: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,6 +224,28 @@ func TestIsFleetResource(t *testing.T) {
 				t.Errorf("isFleetResource(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsTeamYAML(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"fleets/workstations.yml", true},
+		{"teams/workstations.yml", true},
+		{"fleets/infra.yaml", true},
+		{"teams/infra.yaml", true},
+		{"fleets/workstations.md", false},
+		{"policies/disk.yml", false},
+		{"fleets-extra/x.yml", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isTeamYAML(c.path); got != c.want {
+			t.Errorf("isTeamYAML(%q) = %v, want %v", c.path, got, c.want)
+		}
 	}
 }
 

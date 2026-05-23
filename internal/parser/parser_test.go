@@ -420,8 +420,8 @@ team_settings: {}
 		},
 		{
 			name:       "missing teams directory",
-			wantErrMsg: "teams",
-			setup:      func(root string) {}, // empty dir, no teams/
+			wantErrMsg: "directory not found",
+			setup:      func(root string) {}, // empty dir, no fleets/ or teams/
 		},
 		{
 			name:       "missing name field",
@@ -624,5 +624,65 @@ team_settings: {}
 	}
 	if !foundDupErr {
 		t.Fatalf("expected duplicate software package error, got: %+v", repo.Errors)
+	}
+}
+
+// TestParseRepoFleetsDir verifies the new canonical directory name (fleets/)
+// produced by Fleet's `fleetctl new` since the teams->fleets migration.
+func TestParseRepoFleetsDir(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: Workstations
+policies: []
+queries: []
+software:
+  packages: []
+team_settings: {}
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "workstations.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team from fleets/, got %d (errors: %v)", len(repo.Teams), repo.Errors)
+	}
+	if repo.Teams[0].Name != "Workstations" {
+		t.Errorf("team name = %q, want %q", repo.Teams[0].Name, "Workstations")
+	}
+}
+
+// TestParseRepoFleetsTakesPriorityOverTeams verifies fleets/ wins when both
+// directories exist (defensive behavior for repos mid-migration).
+func TestParseRepoFleetsTakesPriorityOverTeams(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	teamsDir := filepath.Join(root, "teams")
+	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(teamsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(dir, name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(fleetsDir, "ws.yml", "name: FromFleets\npolicies: []\nqueries: []\nsoftware:\n  packages: []\nteam_settings: {}\n")
+	write(teamsDir, "ws.yml", "name: FromTeams\npolicies: []\nqueries: []\nsoftware:\n  packages: []\nteam_settings: {}\n")
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Teams) != 1 || repo.Teams[0].Name != "FromFleets" {
+		t.Fatalf("expected single team named FromFleets, got %d teams: %+v", len(repo.Teams), repo.Teams)
 	}
 }

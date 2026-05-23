@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/TsekNet/fleet-plan/internal/teamdir"
 	"gopkg.in/yaml.v3"
 )
 
@@ -40,7 +41,7 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 		case f == "base.yml", f == envFile, strings.HasPrefix(f, "labels/") && !strings.HasSuffix(f, ".md"):
 			scope.IncludeGlobal = true
 
-		case strings.HasPrefix(f, "teams/") && (strings.HasSuffix(f, ".yml") || strings.HasSuffix(f, ".yaml")):
+		case isTeamYAML(f):
 			name := readTeamName(filepath.Join(root, f))
 			if name != "" && !teamsSeen[name] {
 				teamsSeen[name] = true
@@ -80,7 +81,16 @@ func isFleetResource(f string) bool {
 }
 
 func isFleetResourceOrTeam(f string) bool {
-	return isFleetResource(f) || (strings.HasPrefix(f, "teams/") && (strings.HasSuffix(f, ".yml") || strings.HasSuffix(f, ".yaml")))
+	return isFleetResource(f) || isTeamYAML(f)
+}
+
+// isTeamYAML reports whether a repo-relative path is a per-team YAML file
+// under any recognized team directory (fleets/ or teams/).
+func isTeamYAML(f string) bool {
+	if !strings.HasSuffix(f, ".yml") && !strings.HasSuffix(f, ".yaml") {
+		return false
+	}
+	return teamdir.HasPrefix(f)
 }
 
 // buildSearchPatterns returns the set of path strings to grep for in team YAMLs.
@@ -103,12 +113,17 @@ func buildSearchPatterns(root, f string) []string {
 	return patterns
 }
 
-// teamsReferencingAny reads teams/*.yml and returns team names whose file
-// content contains any of the given patterns (plain string search).
+// teamsReferencingAny reads every team YAML in the repo (fleets/ or teams/)
+// and returns team names whose file content contains any of the given patterns
+// (plain string search).
 func teamsReferencingAny(root string, patterns []string) []string {
-	ymlMatches, _ := filepath.Glob(filepath.Join(root, "teams", "*.yml"))
-	yamlMatches, _ := filepath.Glob(filepath.Join(root, "teams", "*.yaml"))
-	matches := append(ymlMatches, yamlMatches...)
+	var matches []string
+	for _, dir := range teamdir.Names() {
+		for _, ext := range []string{"*.yml", "*.yaml"} {
+			m, _ := filepath.Glob(filepath.Join(root, dir, ext))
+			matches = append(matches, m...)
+		}
+	}
 	seen := map[string]bool{}
 	var names []string
 	for _, teamFile := range matches {

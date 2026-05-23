@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/TsekNet/fleet-plan/internal/teamdir"
 	"gopkg.in/yaml.v3"
 )
 
@@ -284,17 +285,18 @@ func MatchesAnyTeam(name string, filters []string) bool {
 func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRepo, error) {
 	repo := &ParsedRepo{}
 
-	teamsDir := filepath.Join(root, "teams")
+	teamsDirName := teamdir.Resolve(root)
+	teamsDir := filepath.Join(root, teamsDirName)
 	entries, err := os.ReadDir(teamsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			repo.Errors = append(repo.Errors, ParseError{
 				File:    teamsDir,
-				Message: "teams/ directory not found. Are you in a fleet-gitops repo?",
+				Message: fmt.Sprintf("%s/ directory not found. Are you in a fleet-gitops repo?", teamsDirName),
 			})
 			return repo, nil
 		}
-		return nil, fmt.Errorf("reading teams directory: %w", err)
+		return nil, fmt.Errorf("reading %s directory: %w", teamsDirName, err)
 	}
 
 	for _, entry := range entries {
@@ -336,7 +338,8 @@ func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRe
 	return repo, nil
 }
 
-// parseTeamFile parses a single teams/*.yml file and resolves all path: refs.
+// parseTeamFile parses a single team YAML file (under fleets/ or teams/) and
+// resolves all path: refs.
 func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 	var errs []ParseError
 
@@ -661,7 +664,7 @@ func extractQueryFromYAML(data []byte) string {
 	return strings.TrimSpace(string(data))
 }
 
-// NormalizeSoftwarePath canonicalizes teams/*.yml software package paths so
+// NormalizeSoftwarePath canonicalizes team YAML software package paths so
 // they match Fleet API's software.packages[].referenced_yaml_path format.
 // Example: "../software/mac/slack/slack.yml" -> "software/mac/slack/slack.yml"
 func NormalizeSoftwarePath(p string) string {

@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/TsekNet/fleet-plan/internal/teamdir"
 )
 
 // CheckoutBaseline extracts the base-branch versions of the given files into a
@@ -26,8 +28,9 @@ func CheckoutBaseline(repoRoot string, baseRef string, files []string) (tmpRoot 
 	}
 	cleanup = func() { os.RemoveAll(tmpRoot) }
 
-	// Ensure teams/ directory exists so ParseRepo doesn't bail early.
-	os.MkdirAll(filepath.Join(tmpRoot, "teams"), 0o755)
+	// Ensure the team directory exists so ParseRepo doesn't bail early.
+	// Mirror whichever name the source repo uses (fleets/ or teams/).
+	os.MkdirAll(filepath.Join(tmpRoot, teamdir.Resolve(repoRoot)), 0o755)
 
 	// Resolve which files we need: the explicitly changed files, plus any
 	// files they reference (path: directives in team YAML). We start with
@@ -84,7 +87,7 @@ func collectBaselineFiles(repoRoot, baseRef string, changedFiles []string) []str
 	// references. Also extract any referenced resource files so the parser can
 	// resolve them.
 	for _, f := range changedFiles {
-		if !strings.HasPrefix(f, "teams/") && f != "base.yml" && f != "default.yml" {
+		if !teamdir.HasPrefix(f) && f != "base.yml" && f != "default.yml" {
 			continue
 		}
 		content, err := gitShow(repoRoot, baseRef, f)
