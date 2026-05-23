@@ -65,6 +65,13 @@ var ValidTopLevelKeys = map[string]bool{
 	"queries":       true,
 	"software":      true,
 	"labels":        true,
+	// Newer Fleet schema additions accepted by `fleetctl gitops`. We parse
+	// these as opaque maps so they don't break validation; field-level diffing
+	// of these sections isn't implemented yet but the absence of an error
+	// keeps the rest of the diff (profiles, policies, queries, software)
+	// trustworthy.
+	"settings":      true,
+	"reports":       true,
 }
 
 // Valid label membership types (from server/fleet/labels.go).
@@ -252,17 +259,28 @@ type rawSoftwarePackage struct {
 }
 
 type rawControls struct {
-	Scripts         []rawPathRef `yaml:"scripts"`
-	MacOSSettings   struct {
+	Scripts       []rawPathRef `yaml:"scripts"`
+	MacOSSettings struct {
 		CustomSettings []rawProfileRef `yaml:"custom_settings"`
 	} `yaml:"macos_settings"`
 	WindowsSettings struct {
 		CustomSettings []rawProfileRef `yaml:"custom_settings"`
 	} `yaml:"windows_settings"`
+	// AppleSettings is the modern unified Apple-platform block, replacing
+	// macos_settings.custom_settings. configuration_profiles entries can be
+	// .mobileconfig (macOS/iOS/iPadOS), .json (DDM declarations), or .xml.
+	// The platform is inferred from the file path (e.g. lib/ipados/...) and
+	// from file extension if no path hint is present.
+	AppleSettings struct {
+		ConfigurationProfiles []rawProfileRef `yaml:"configuration_profiles"`
+	} `yaml:"apple_settings"`
 }
 
 type rawProfileRef struct {
-	Path string `yaml:"path"`
+	Path             string   `yaml:"path"`
+	LabelsIncludeAny []string `yaml:"labels_include_any"`
+	LabelsExcludeAny []string `yaml:"labels_exclude_any"`
+	LabelsIncludeAll []string `yaml:"labels_include_all"`
 }
 
 // ---------- Parser ----------
@@ -496,7 +514,47 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 		})
 	}
 
+	// apple_settings.configuration_profiles is the unified modern block that
+	// supersedes macos_settings.custom_settings. Entries may be .mobileconfig
+	// (macOS/iOS/iPadOS), .json (DDM declarations), or .xml. Diff identity is
+	// by name (PayloadDisplayName or filename for DDM); platform is informational.
+	for _, ref := range raw.Controls.AppleSettings.ConfigurationProfiles {
+		resolved := filepath.Join(dir, ref.Path)
+		if root != "" {
+			if err := safePath(root, resolved); err != nil {
+				errs = append(errs, ParseError{File: path, Message: err.Error()})
+				continue
+			}
+		}
+		name := extractProfileName(resolved)
+		if name == "" {
+			name = profileNameFromFilename(resolved)
+		}
+		team.Profiles = append(team.Profiles, ParsedProfile{
+			Path:       resolved,
+			Name:       name,
+			Platform:   inferApplePlatform(ref.Path),
+			SourceFile: path,
+		})
+	}
+
 	return team, errs
+}
+
+// inferApplePlatform returns a coarse platform string based on the path
+// segment. lib/ipados/* → ipados, lib/ios/* → ios, anything else → darwin
+// (covers lib/macos/, lib/all/, lib/unassigned/, etc.). Fleet's diff identity
+// is the embedded profile name, not platform — this is purely for display.
+func inferApplePlatform(refPath string) string {
+	clean := strings.ToLower(filepath.ToSlash(filepath.Clean(refPath)))
+	switch {
+	case strings.Contains(clean, "/ipados/"):
+		return "ipados"
+	case strings.Contains(clean, "/ios/"):
+		return "ios"
+	default:
+		return "darwin"
+	}
 }
 
 // readYAMLRef resolves a path: reference, validates it stays within the repo

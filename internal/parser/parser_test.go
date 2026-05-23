@@ -686,3 +686,114 @@ func TestParseRepoFleetsTakesPriorityOverTeams(t *testing.T) {
 		t.Fatalf("expected single team named FromFleets, got %d teams: %+v", len(repo.Teams), repo.Teams)
 	}
 }
+
+// TestParseRepoAppleSettings exercises controls.apple_settings.configuration_profiles,
+// the modern unified block that replaced macos_settings.custom_settings. Each
+// referenced file should produce a ParsedProfile with platform inferred from
+// the path (macos/ → darwin, ipados/ → ipados, ios/ → ios).
+func TestParseRepoAppleSettings(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	macosDir := filepath.Join(root, "lib", "macos", "profiles")
+	ipadosDir := filepath.Join(root, "lib", "ipados", "profiles")
+	iosDir := filepath.Join(root, "lib", "ios", "profiles")
+	for _, d := range []string{fleetsDir, macosDir, ipadosDir, iosDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// .mobileconfig with a PayloadDisplayName so extractProfileName succeeds.
+	mobileconfig := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadDisplayName</key>
+  <string>Mac Energy Saver</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+</dict>
+</plist>
+`
+	if err := os.WriteFile(filepath.Join(macosDir, "energy.mobileconfig"), []byte(mobileconfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// DDM .json — name comes from filename.
+	if err := os.WriteFile(filepath.Join(ipadosDir, "ipad-force-os.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(iosDir, "ios-restrictions.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	teamYAML := `name: Mixed Apple
+controls:
+  apple_settings:
+    configuration_profiles:
+      - path: ../lib/macos/profiles/energy.mobileconfig
+        labels_include_any: [mac-fleet]
+      - path: ../lib/ipados/profiles/ipad-force-os.json
+        labels_include_any: [ipad-fleet]
+      - path: ../lib/ios/profiles/ios-restrictions.json
+team_settings: {}
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "mixed.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	got := map[string]string{}
+	for _, p := range repo.Teams[0].Profiles {
+		got[p.Name] = p.Platform
+	}
+	want := map[string]string{
+		"Mac Energy Saver":     "darwin",
+		"ipad-force-os":        "ipados",
+		"ios-restrictions":     "ios",
+	}
+	for name, plat := range want {
+		if got[name] != plat {
+			t.Errorf("profile %q: platform = %q, want %q (full map: %v)", name, got[name], plat, got)
+		}
+	}
+}
+
+// TestParseRepoAcceptsSettingsAndReportsKeys covers top-level `settings:` and
+// `reports:` keys that current Fleet GitOps yaml includes but fleet-plan
+// originally rejected as unknown.
+func TestParseRepoAcceptsSettingsAndReportsKeys(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: T1
+team_settings: {}
+settings:
+  host_expiry_settings:
+    host_expiry_enabled: false
+reports:
+  - name: example
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "t1.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	for _, e := range repo.Errors {
+		if strings.Contains(e.Message, "unknown top-level key") {
+			t.Errorf("unexpected unknown-key error: %v", e)
+		}
+	}
+}
