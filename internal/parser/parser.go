@@ -65,11 +65,11 @@ var ValidTopLevelKeys = map[string]bool{
 	"queries":       true,
 	"software":      true,
 	"labels":        true,
-	// Newer Fleet schema additions accepted by `fleetctl gitops`. We parse
-	// these as opaque maps so they don't break validation; field-level diffing
-	// of these sections isn't implemented yet but the absence of an error
-	// keeps the rest of the diff (profiles, policies, queries, software)
-	// trustworthy.
+	// Newer Fleet schema additions accepted by `fleetctl gitops`.
+	// `reports:` is the renamed `queries:` (fleetdm/fleet#40726); we parse
+	// it fully via rawTeamFile.Reports. `settings:` is currently accepted
+	// as opaque — field-level diffing isn't implemented but the absence of
+	// an error keeps the rest of the diff trustworthy.
 	"settings":      true,
 	"reports":       true,
 }
@@ -219,8 +219,13 @@ type rawTeamFile struct {
 	Controls     rawControls      `yaml:"controls"`
 	Policies     []rawPathRef     `yaml:"policies"`
 	Queries      []rawPathRef     `yaml:"queries"`
-	Software     rawSoftwareBlock `yaml:"software"`
-	Labels       []rawPathRef     `yaml:"labels"`
+	// Reports is the renamed-in-fleetdm/fleet#40726 spelling of queries.
+	// `fleetctl gitops` accepts both; we treat them as equivalent here so
+	// repos that use the modern `reports:` keyword don't show every live
+	// Fleet query as REMOVED on the diff.
+	Reports  []rawPathRef     `yaml:"reports"`
+	Software rawSoftwareBlock `yaml:"software"`
+	Labels   []rawPathRef     `yaml:"labels"`
 }
 
 type rawPathRef struct {
@@ -402,8 +407,10 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 		team.Policies = append(team.Policies, policies...)
 	}
 
-	// Resolve queries
-	for _, ref := range raw.Queries {
+	// Resolve queries. Both `queries:` and `reports:` are accepted — Fleet
+	// renamed the key in fleetdm/fleet#40726 but kept the old spelling
+	// working, so repos may use either or both during transition.
+	for _, ref := range append(append([]rawPathRef(nil), raw.Queries...), raw.Reports...) {
 		queries, parseErrs := resolveQueryRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		team.Queries = append(team.Queries, queries...)
@@ -760,11 +767,13 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 		return nil, []ParseError{{File: path, Message: fmt.Sprintf("YAML parse error: %s", err)}}
 	}
 
-	// Parse structured fields (labels, policies, queries path refs)
+	// Parse structured fields (labels, policies, queries path refs).
+	// `reports:` is the renamed-in-#40726 alias for `queries:`.
 	var rawStruct struct {
 		Labels   []rawPathRef `yaml:"labels"`
 		Policies []rawPathRef `yaml:"policies"`
 		Queries  []rawPathRef `yaml:"queries"`
+		Reports  []rawPathRef `yaml:"reports"`
 	}
 	if err := yaml.Unmarshal(data, &rawStruct); err != nil {
 		return nil, []ParseError{{File: path, Message: fmt.Sprintf("YAML parse error: %s", err)}}
@@ -798,8 +807,9 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 		global.Policies = append(global.Policies, policies...)
 	}
 
-	// Resolve global queries
-	for _, ref := range rawStruct.Queries {
+	// Resolve global queries. Accept both `queries:` and the renamed
+	// `reports:` (fleetdm/fleet#40726); see rawTeamFile for context.
+	for _, ref := range append(append([]rawPathRef(nil), rawStruct.Queries...), rawStruct.Reports...) {
 		queries, parseErrs := resolveQueryRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		global.Queries = append(global.Queries, queries...)

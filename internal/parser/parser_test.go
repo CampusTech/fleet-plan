@@ -796,10 +796,10 @@ team_settings: {}
 	}
 }
 
-// TestParseRepoAcceptsSettingsAndReportsKeys covers top-level `settings:` and
-// `reports:` keys that current Fleet GitOps yaml includes but fleet-plan
-// originally rejected as unknown.
-func TestParseRepoAcceptsSettingsAndReportsKeys(t *testing.T) {
+// TestParseRepoAcceptsSettingsKey covers the top-level `settings:` block,
+// which current Fleet GitOps yaml includes but fleet-plan originally
+// rejected as unknown. It is parsed opaquely (no field-level diff yet).
+func TestParseRepoAcceptsSettingsKey(t *testing.T) {
 	root := t.TempDir()
 	fleetsDir := filepath.Join(root, "fleets")
 	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
@@ -810,8 +810,6 @@ team_settings: {}
 settings:
   host_expiry_settings:
     host_expiry_enabled: false
-reports:
-  - name: example
 `
 	if err := os.WriteFile(filepath.Join(fleetsDir, "t1.yml"), []byte(teamYAML), 0o644); err != nil {
 		t.Fatal(err)
@@ -824,5 +822,50 @@ reports:
 		if strings.Contains(e.Message, "unknown top-level key") {
 			t.Errorf("unexpected unknown-key error: %v", e)
 		}
+	}
+}
+
+// TestParseRepoReportsAliasesQueries verifies that `reports:` (the renamed
+// `queries:` from fleetdm/fleet#40726) is parsed as path refs and merged
+// into the team's query list. Without this, queries defined under `reports:`
+// don't appear on the proposed side and Fleet's live queries get reported
+// as REMOVED.
+func TestParseRepoReportsAliasesQueries(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	queriesDir := filepath.Join(root, "lib", "queries")
+	for _, d := range []string{fleetsDir, queriesDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A query file in the standard Fleet GitOps list-of-queries format.
+	queryYAML := `- name: My Report Query
+  query: SELECT 1;
+  platform: darwin
+`
+	if err := os.WriteFile(filepath.Join(queriesDir, "rpt.yml"), []byte(queryYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: T1
+team_settings: {}
+reports:
+  - path: ../lib/queries/rpt.yml
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "t1.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	if len(repo.Teams[0].Queries) != 1 || repo.Teams[0].Queries[0].Name != "My Report Query" {
+		t.Errorf("expected 1 query named %q from reports:, got %+v", "My Report Query", repo.Teams[0].Queries)
 	}
 }
