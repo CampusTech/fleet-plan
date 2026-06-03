@@ -785,9 +785,9 @@ team_settings: {}
 		got[p.Name] = p.Platform
 	}
 	want := map[string]string{
-		"Mac Energy Saver":     "darwin",
-		"ipad-force-os":        "ipados",
-		"ios-restrictions":     "ios",
+		"Mac Energy Saver": "darwin",
+		"ipad-force-os":    "ipados",
+		"ios-restrictions": "ios",
 	}
 	for name, plat := range want {
 		if got[name] != plat {
@@ -867,5 +867,119 @@ reports:
 	}
 	if len(repo.Teams[0].Queries) != 1 || repo.Teams[0].Queries[0].Name != "My Report Query" {
 		t.Errorf("expected 1 query named %q from reports:, got %+v", "My Report Query", repo.Teams[0].Queries)
+	}
+}
+
+// TestParseRepoWindowsConfigurationProfiles verifies that
+// controls.windows_settings.configuration_profiles is parsed. This is the
+// modern key (mirroring apple_settings.configuration_profiles) that fleetctl
+// gitops accepts alongside the older windows_settings.custom_settings. Without
+// it, Windows profiles defined under configuration_profiles never appear on the
+// proposed side and every matching live Fleet profile is reported as REMOVED.
+func TestParseRepoWindowsConfigurationProfiles(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	winDir := filepath.Join(root, "lib", "windows", "configuration-profiles")
+	for _, d := range []string{fleetsDir, winDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Windows .xml profile — Fleet identifies it by filename, not content.
+	if err := os.WriteFile(filepath.Join(winDir, "campus-wifi-8021x.xml"), []byte(`<Replace></Replace>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Label-scoped entry to mirror the real-world pilot config.
+	teamYAML := `name: T1
+team_settings: {}
+controls:
+  windows_settings:
+    configuration_profiles:
+      - path: ../lib/windows/configuration-profiles/campus-wifi-8021x.xml
+        labels_include_any:
+          - test-pilots
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "t1.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	var got []string
+	for _, p := range repo.Teams[0].Profiles {
+		got = append(got, p.Name+"|"+p.Platform)
+	}
+	want := "campus-wifi-8021x|windows"
+	found := false
+	for _, g := range got {
+		if g == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("windows_settings.configuration_profiles not parsed: want %q in %v", want, got)
+	}
+}
+
+// TestParseSoftwarePackageListForm verifies that a package YAML file written as
+// a single-element list (- url: ...) parses identically to the single-object
+// form (url: ...). fleetctl gitops accepts both, but resolveSoftwareRef
+// originally only unmarshaled the object form; the list form failed to parse,
+// dropping the package from the proposed side and reporting it as REMOVED.
+func TestParseSoftwarePackageListForm(t *testing.T) {
+	root := t.TempDir()
+	teamsDir := filepath.Join(root, "teams")
+	softwareDir := filepath.Join(root, "software", "windows", "list-app")
+	if err := os.MkdirAll(teamsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(softwareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// List form: a one-element YAML sequence rather than a top-level map.
+	pkgYAML := `- url: https://downloads.example.com/list-app.exe
+  display_name: List App
+  self_service: true
+`
+	if err := os.WriteFile(filepath.Join(softwareDir, "list-app.yml"), []byte(pkgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: Workstations
+team_settings: {}
+software:
+  packages:
+    - path: ../software/windows/list-app/list-app.yml
+      labels_include_any:
+        - test-pilots
+`
+	if err := os.WriteFile(filepath.Join(teamsDir, "workstations.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	pkgs := repo.Teams[0].Software.Packages
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package from list-form file, got %d: %+v", len(pkgs), pkgs)
+	}
+	if pkgs[0].URL != "https://downloads.example.com/list-app.exe" {
+		t.Errorf("package URL = %q, want list-app.exe URL", pkgs[0].URL)
+	}
+	if !pkgs[0].SelfService {
+		t.Errorf("self_service from list-form package not parsed (want true)")
 	}
 }
