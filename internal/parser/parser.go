@@ -70,8 +70,8 @@ var ValidTopLevelKeys = map[string]bool{
 	// it fully via rawTeamFile.Reports. `settings:` is currently accepted
 	// as opaque — field-level diffing isn't implemented but the absence of
 	// an error keeps the rest of the diff trustworthy.
-	"settings":      true,
-	"reports":       true,
+	"settings": true,
+	"reports":  true,
 }
 
 // Valid label membership types (from server/fleet/labels.go).
@@ -212,13 +212,13 @@ func (e ParseError) Error() string {
 // ---------- Team YAML raw types (for initial parsing) ----------
 
 type rawTeamFile struct {
-	Name         string           `yaml:"name"`
-	TeamSettings yaml.Node        `yaml:"team_settings"`
-	OrgSettings  yaml.Node        `yaml:"org_settings"`
-	AgentOptions yaml.Node        `yaml:"agent_options"`
-	Controls     rawControls      `yaml:"controls"`
-	Policies     []rawPathRef     `yaml:"policies"`
-	Queries      []rawPathRef     `yaml:"queries"`
+	Name         string       `yaml:"name"`
+	TeamSettings yaml.Node    `yaml:"team_settings"`
+	OrgSettings  yaml.Node    `yaml:"org_settings"`
+	AgentOptions yaml.Node    `yaml:"agent_options"`
+	Controls     rawControls  `yaml:"controls"`
+	Policies     []rawPathRef `yaml:"policies"`
+	Queries      []rawPathRef `yaml:"queries"`
 	// Reports is the renamed-in-fleetdm/fleet#40726 spelling of queries.
 	// `fleetctl gitops` accepts both; we treat them as equivalent here so
 	// repos that use the modern `reports:` keyword don't show every live
@@ -239,12 +239,12 @@ type rawSoftwareBlock struct {
 }
 
 type rawFleetApp struct {
-	Slug              string       `yaml:"slug"`
-	SelfService       bool         `yaml:"self_service"`
-	InstallScript     *rawPathRef  `yaml:"install_script"`
-	UninstallScript   *rawPathRef  `yaml:"uninstall_script"`
-	PreInstallQuery   *rawPathRef  `yaml:"pre_install_query"`
-	PostInstallScript *rawPathRef  `yaml:"post_install_script"`
+	Slug              string      `yaml:"slug"`
+	SelfService       bool        `yaml:"self_service"`
+	InstallScript     *rawPathRef `yaml:"install_script"`
+	UninstallScript   *rawPathRef `yaml:"uninstall_script"`
+	PreInstallQuery   *rawPathRef `yaml:"pre_install_query"`
+	PostInstallScript *rawPathRef `yaml:"post_install_script"`
 }
 
 type rawSoftwareRef struct {
@@ -270,6 +270,12 @@ type rawControls struct {
 	} `yaml:"macos_settings"`
 	WindowsSettings struct {
 		CustomSettings []rawProfileRef `yaml:"custom_settings"`
+		// ConfigurationProfiles is the modern key (mirroring
+		// apple_settings.configuration_profiles) that fleetctl gitops accepts
+		// for Windows profiles. Both spellings are valid; profiles defined here
+		// must be parsed or every matching live Fleet profile is reported as
+		// REMOVED.
+		ConfigurationProfiles []rawProfileRef `yaml:"configuration_profiles"`
 	} `yaml:"windows_settings"`
 	// AppleSettings is the modern unified Apple-platform block, replacing
 	// macos_settings.custom_settings. configuration_profiles entries can be
@@ -501,7 +507,13 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			SourceFile: path,
 		})
 	}
-	for _, ref := range raw.Controls.WindowsSettings.CustomSettings {
+	// Windows profiles may be listed under custom_settings (older spelling) or
+	// configuration_profiles (modern spelling, mirroring apple_settings).
+	// fleetctl gitops accepts both, so parse both.
+	for _, ref := range append(
+		append([]rawProfileRef(nil), raw.Controls.WindowsSettings.CustomSettings...),
+		raw.Controls.WindowsSettings.ConfigurationProfiles...,
+	) {
 		resolved := filepath.Join(dir, ref.Path)
 		if root != "" {
 			if err := safePath(root, resolved); err != nil {
@@ -642,9 +654,19 @@ func resolveSoftwareRef(root, baseDir, refPath, parentFile string) ([]ParsedSoft
 		return nil, errs
 	}
 
+	// A package file may be a single object (url: ...) or a single-element
+	// list (- url: ...). fleetctl gitops accepts both, so fall back to the
+	// list form when object unmarshaling fails (mirrors resolvePolicyRef /
+	// resolveQueryRef). Without this the list form is dropped and the package
+	// is falsely reported as REMOVED.
 	var raw rawSoftwarePackage
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, []ParseError{{File: resolved, Message: fmt.Sprintf("YAML parse error: %s", err)}}
+		var list []rawSoftwarePackage
+		if err2 := yaml.Unmarshal(data, &list); err2 == nil && len(list) > 0 {
+			raw = list[0]
+		} else {
+			return nil, []ParseError{{File: resolved, Message: fmt.Sprintf("YAML parse error: %s", err)}}
+		}
 	}
 
 	pkg := ParsedSoftwarePackage{
@@ -966,7 +988,6 @@ func extractMobileconfigName(data []byte) string {
 	}
 	return ""
 }
-
 
 // profileNameFromFilename derives a profile name from the filename by stripping
 // the extension. This is the fallback when content extraction fails.
