@@ -983,3 +983,29 @@ software:
 		t.Errorf("self_service from list-form package not parsed (want true)")
 	}
 }
+
+func TestIsNoTeam(t *testing.T) {
+	tests := []struct {
+		name       string
+		teamName   string
+		sourceFile string
+		want       bool
+	}{
+		{"teams layout name", "No team", "teams/no-team.yml", true},
+		{"teams layout name, lowercase", "no team", "teams/no-team.yml", true},
+		{"fleets layout name", "Unassigned", "fleets/unassigned.yml", true},
+		{"filename fallback", "hosts with no team", "fleets/unassigned.yml", true},
+		{"filename fallback, teams layout", "whatever", "teams/no-team.yml", true},
+		{"real team", "💻 Workstations", "fleets/workstations.yml", false},
+		{"team merely mentioning unassigned", "Unassigned Laptops", "fleets/spares.yml", false},
+		{"no source file", "Engineering", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsNoTeam(tt.teamName, tt.sourceFile); got != tt.want {
+				t.Errorf("IsNoTeam(%q, %q) = %v, want %v", tt.teamName, tt.sourceFile, got, tt.want)
+			}
+		})
+	}
+}

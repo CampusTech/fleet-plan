@@ -306,6 +306,27 @@ func MatchesAnyTeam(name string, filters []string) bool {
 	return false
 }
 
+// IsNoTeam reports whether a parsed team file describes Fleet's special
+// "hosts not assigned to any team" bucket rather than a real team.
+//
+// Fleet calls this bucket "No team" in the teams/ layout (teams/no-team.yml)
+// and "Unassigned" in the fleets/ layout (fleets/unassigned.yml) — fleetctl
+// logs its work on that file as "... for unassigned hosts". Either way it
+// always exists, is never created, and is NOT returned by GET /teams, so
+// callers must not treat its absence there as a new team.
+//
+// Matched on the team name and, as a fallback for a file whose name: key was
+// spelled differently, the source file's base name.
+func IsNoTeam(name, sourceFile string) bool {
+	for _, n := range []string{"No team", "Unassigned"} {
+		if strings.EqualFold(name, n) {
+			return true
+		}
+	}
+	base := strings.ToLower(strings.TrimSuffix(filepath.Base(sourceFile), filepath.Ext(sourceFile)))
+	return base == "no-team" || base == "unassigned"
+}
+
 // ParseRepo parses the fleet-gitops repository at the given root directory.
 // If teamFilters is non-empty, only matching teams are parsed.
 // If defaultFile is non-empty, it is used as the path to default.yml (the

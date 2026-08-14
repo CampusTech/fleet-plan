@@ -142,6 +142,34 @@ func rdSummary(rd ResourceDiff) string {
 	return fmt.Sprintf("+%d ~%d -%d", len(rd.Added), len(rd.Modified), len(rd.Deleted))
 }
 
+// noTeamSummary describes what a repo configures for the no-team bucket, as a
+// comma-separated list of non-zero resource counts ("2 policies, 2 scripts").
+// Returns "" when nothing is configured.
+func noTeamSummary(t parser.ParsedTeam) string {
+	softwareCount := len(t.Software.Packages) + len(t.Software.FleetMaintained) + len(t.Software.AppStoreApps)
+	counts := []struct {
+		n    int
+		one  string
+		many string
+	}{
+		{len(t.Policies), "policy", "policies"},
+		{len(t.Queries), "query", "queries"},
+		{len(t.Scripts), "script", "scripts"},
+		{len(t.Profiles), "profile", "profiles"},
+		{softwareCount, "software item", "software items"},
+	}
+	var parts []string
+	for _, c := range counts {
+		switch {
+		case c.n == 1:
+			parts = append(parts, "1 "+c.one)
+		case c.n > 1:
+			parts = append(parts, fmt.Sprintf("%d %s", c.n, c.many))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 // rdNames returns names of changes for debugging.
 func rdNames(rd ResourceDiff) string {
 	var names []string
@@ -241,17 +269,17 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 
 		currentTeam, exists := currentTeams[proposedTeam.Name]
 		if !exists {
-			// "No team" is a special Fleet concept -- it always exists but isn't
-			// returned by the /teams API endpoint. It holds hosts not assigned to
-			// any team. Skip the "will be created" warning for it.
-			if strings.EqualFold(proposedTeam.Name, "No team") {
-				// Can't deep-diff against API state for "No team" since it's not
-				// in the teams list. Just show it exists with its resource counts.
-				pCount := len(proposedTeam.Policies)
-				qCount := len(proposedTeam.Queries)
-				if pCount > 0 || qCount > 0 {
+			// Fleet's "hosts on no team" bucket -- "No team" in the teams/ layout,
+			// "Unassigned" in the fleets/ layout -- always exists but isn't
+			// returned by the /teams API endpoint. Skip the "will be created"
+			// warning for it, and don't list its resources as additions.
+			if parser.IsNoTeam(proposedTeam.Name, proposedTeam.SourceFile) {
+				// Can't deep-diff against API state since it's not in the teams
+				// list. Just report what the repo configures for it, so nothing
+				// silently disappears from the plan.
+				if summary := noTeamSummary(proposedTeam); summary != "" {
 					result.Errors = append(result.Errors,
-						fmt.Sprintf("%d policies, %d queries configured (no API diff available for \"No team\")", pCount, qCount))
+						fmt.Sprintf("%s configured (no API diff available for hosts on no team)", summary))
 				}
 			} else {
 				// Genuinely new team
