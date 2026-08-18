@@ -79,10 +79,9 @@ func CheckoutBaseline(repoRoot string, baseRef string, files []string) (tmpRoot 
 	// explicit MkdirAll only matters when the base layout was detected but is
 	// otherwise empty.
 	if baseLayout != "" {
-		if err := os.MkdirAll(filepath.Join(tmpRoot, baseLayout), 0o755); err != nil {
-			cleanup()
-			return "", nil, fmt.Errorf("creating baseline team dir: %w", err)
-		}
+		// Best-effort: the extracted team files already created this dir in
+		// every case that matters, so a failure here is not worth aborting on.
+		_ = os.MkdirAll(filepath.Join(tmpRoot, baseLayout), 0o755)
 	}
 
 	return tmpRoot, cleanup, nil

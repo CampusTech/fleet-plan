@@ -89,9 +89,6 @@ Strictly read-only -- GET requests only.`,
 func runDiff(cmd *cobra.Command, _ []string) error {
 	start := time.Now()
 	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	auth, err := config.ResolveAuth(flagURL, flagToken, flagRepo)
 	if err != nil {

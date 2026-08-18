@@ -252,6 +252,27 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantAll: []string{"<!-- fleet-plan-marker -->"},
 		},
 		{
+			name: "ci job url link",
+			results: []diff.DiffResult{{
+				Team:     "T",
+				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
+			}},
+			opts: MarkdownOptions{
+				Marker: "fleet-plan-marker",
+				JobURL: "https://gitlab.example.com/group/repo/-/jobs/99",
+			},
+			wantAll: []string{
+				"[View pipeline job](https://gitlab.example.com/group/repo/-/jobs/99)",
+				"<!-- fleet-plan-marker -->",
+			},
+		},
+		{
+			name:    "ci job url link on no changes",
+			results: nil,
+			opts:    MarkdownOptions{JobURL: "https://gitlab.example.com/group/repo/-/jobs/99"},
+			wantAll: []string{"No changes detected", "[View pipeline job](https://gitlab.example.com/group/repo/-/jobs/99)"},
+		},
+		{
 			name:    "ci-marker on no changes",
 			results: nil,
 			opts:    MarkdownOptions{Marker: "fleet-plan-marker"},

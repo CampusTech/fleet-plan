@@ -2295,3 +2295,63 @@ func findTeam(t *testing.T, results []DiffResult, name string) *DiffResult {
 	t.Fatalf("team %q not found in results", name)
 	return nil
 }
+
+func TestSubtractConfigChanges(t *testing.T) {
+	change := func(section, key, old, new string) ConfigChange {
+		return ConfigChange{Section: section, Key: key, Old: old, New: new}
+	}
+
+	tests := []struct {
+		name     string
+		total    []ConfigChange
+		baseline []ConfigChange
+		want     []ConfigChange
+	}{
+		{
+			name:  "empty baseline passes everything through",
+			total: []ConfigChange{change("org_settings", "server_settings.server_url", "a", "b")},
+			want:  []ConfigChange{change("org_settings", "server_settings.server_url", "a", "b")},
+		},
+		{
+			name:     "identical change is subtracted",
+			total:    []ConfigChange{change("org_settings", "k", "a", "b")},
+			baseline: []ConfigChange{change("org_settings", "k", "a", "b")},
+			want:     nil,
+		},
+		{
+			name: "only the pre-existing change is subtracted",
+			total: []ConfigChange{
+				change("org_settings", "k1", "a", "b"),
+				change("agent_options", "k2", "c", "d"),
+			},
+			baseline: []ConfigChange{change("org_settings", "k1", "a", "b")},
+			want:     []ConfigChange{change("agent_options", "k2", "c", "d")},
+		},
+		{
+			name:     "same key with a different new value is kept",
+			total:    []ConfigChange{change("org_settings", "k", "a", "b")},
+			baseline: []ConfigChange{change("org_settings", "k", "a", "different")},
+			want:     []ConfigChange{change("org_settings", "k", "a", "b")},
+		},
+		{
+			name:     "same key in a different section is kept",
+			total:    []ConfigChange{change("controls", "k", "a", "b")},
+			baseline: []ConfigChange{change("org_settings", "k", "a", "b")},
+			want:     []ConfigChange{change("controls", "k", "a", "b")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := subtractConfigChanges(tt.total, tt.baseline)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d changes %+v, want %d %+v", len(got), got, len(tt.want), tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("change %d: got %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
