@@ -725,32 +725,81 @@ func diffQueries(current []api.Query, proposed []parser.ParsedQuery) ResourceDif
 	return diff
 }
 
+// disambiguateSoftwareKeys returns a collision-free diff key for each package.
+// base[i] is a package's primary identity: its referenced YAML file path,
+// which is how Fleet identifies an installer. Most files define exactly one
+// package, so the base path is used verbatim — this keeps a URL change on that
+// package a "modify" rather than a replace. When several packages share a base
+// path (a list-form file with multiple entries), each colliding key is
+// suffixed with the package URL so no sibling silently overwrites another in
+// the diff map. Empty base keys pass through unchanged; callers skip them.
+func disambiguateSoftwareKeys(base, urls []string) []string {
+	counts := make(map[string]int, len(base))
+	for _, b := range base {
+		if b != "" {
+			counts[b]++
+		}
+	}
+	keys := make([]string, len(base))
+	for i, b := range base {
+		switch {
+		case b == "":
+			keys[i] = ""
+		case counts[b] > 1:
+			keys[i] = b + "#" + parser.NormalizeSoftwarePath(urls[i])
+		default:
+			keys[i] = b
+		}
+	}
+	return keys
+}
+
 func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) ResourceDiff {
 	var rd ResourceDiff
 
 	// -------- Packages (keyed by referenced_yaml_path) --------
-	currentPkgs := make(map[string]api.TeamSoftwarePackage)
-	for _, p := range current.Packages {
-		key := parser.NormalizeSoftwarePath(p.ReferencedYAMLPath)
-		if key == "" {
-			key = parser.NormalizeSoftwarePath(p.URL)
+	// The display name is always the base path; the map key may additionally
+	// carry a URL discriminator when one file defines multiple packages.
+	currentBase := make([]string, len(current.Packages))
+	currentURLs := make([]string, len(current.Packages))
+	for i, p := range current.Packages {
+		b := parser.NormalizeSoftwarePath(p.ReferencedYAMLPath)
+		if b == "" {
+			b = parser.NormalizeSoftwarePath(p.URL)
 		}
-		if key != "" {
-			currentPkgs[key] = p
+		currentBase[i] = b
+		currentURLs[i] = p.URL
+	}
+	currentKeys := disambiguateSoftwareKeys(currentBase, currentURLs)
+	currentPkgs := make(map[string]api.TeamSoftwarePackage, len(current.Packages))
+	currentNames := make(map[string]string, len(current.Packages))
+	for i, p := range current.Packages {
+		if currentKeys[i] != "" {
+			currentPkgs[currentKeys[i]] = p
+			currentNames[currentKeys[i]] = currentBase[i]
 		}
 	}
 
-	proposedPkgs := make(map[string]parser.ParsedSoftwarePackage)
-	for _, p := range proposed.Packages {
-		key := parser.NormalizeSoftwarePath(p.RefPath)
-		if key == "" {
-			key = inferSoftwarePathFromSource(p.SourceFile)
+	proposedBase := make([]string, len(proposed.Packages))
+	proposedURLs := make([]string, len(proposed.Packages))
+	for i, p := range proposed.Packages {
+		b := parser.NormalizeSoftwarePath(p.RefPath)
+		if b == "" {
+			b = parser.NormalizeSoftwarePath(inferSoftwarePathFromSource(p.SourceFile))
 		}
-		if key == "" {
-			key = parser.NormalizeSoftwarePath(p.URL)
+		if b == "" {
+			b = parser.NormalizeSoftwarePath(p.URL)
 		}
-		if key != "" {
-			proposedPkgs[key] = p
+		proposedBase[i] = b
+		proposedURLs[i] = p.URL
+	}
+	proposedKeys := disambiguateSoftwareKeys(proposedBase, proposedURLs)
+	proposedPkgs := make(map[string]parser.ParsedSoftwarePackage, len(proposed.Packages))
+	proposedNames := make(map[string]string, len(proposed.Packages))
+	for i, p := range proposed.Packages {
+		if proposedKeys[i] != "" {
+			proposedPkgs[proposedKeys[i]] = p
+			proposedNames[proposedKeys[i]] = proposedBase[i]
 		}
 	}
 
@@ -764,7 +813,7 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 			if p.HashSHA256 != "" {
 				fields["hash_sha256"] = FieldDiff{New: p.HashSHA256}
 			}
-			rd.Added = append(rd.Added, ResourceChange{Name: parser.NormalizeSoftwarePath(key), Fields: fields})
+			rd.Added = append(rd.Added, ResourceChange{Name: proposedNames[key], Fields: fields})
 			continue
 		}
 		fields := make(map[string]FieldDiff)
@@ -779,14 +828,14 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 		}
 		if len(fields) > 0 {
 			rd.Modified = append(rd.Modified, ResourceChange{
-				Name:   parser.NormalizeSoftwarePath(key),
+				Name:   proposedNames[key],
 				Fields: fields,
 			})
 		}
 	}
 	for key := range currentPkgs {
 		if _, exists := proposedPkgs[key]; !exists {
-			rd.Deleted = append(rd.Deleted, ResourceChange{Name: parser.NormalizeSoftwarePath(key)})
+			rd.Deleted = append(rd.Deleted, ResourceChange{Name: currentNames[key]})
 		}
 	}
 

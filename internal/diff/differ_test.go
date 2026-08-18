@@ -718,6 +718,62 @@ func TestDiffSoftwarePackageModified(t *testing.T) {
 	}
 }
 
+// TestDiffSoftwareMultiPackageSharedFile verifies that when a single list-form
+// package file yields multiple packages (all sharing one referenced YAML path),
+// the diff surfaces each package instead of collapsing them by the shared path
+// key. Both sides carry two packages under the same path; the URL discriminator
+// keeps them distinct so an unchanged pair produces no spurious add/delete, and
+// a single changed package is reported on its own.
+func TestDiffSoftwareMultiPackageSharedFile(t *testing.T) {
+	const sharedPath = "software/windows/multi/multi.yml"
+
+	current := &api.FleetState{
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "Workstations",
+				Software: api.TeamSoftware{
+					Packages: []api.TeamSoftwarePackage{
+						{ReferencedYAMLPath: sharedPath, URL: "https://example.com/app-one.exe", SelfService: false},
+						{ReferencedYAMLPath: sharedPath, URL: "https://example.com/app-two.exe"},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "Workstations",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						// app-one flips self_service (modified); app-two unchanged.
+						{RefPath: sharedPath, URL: "https://example.com/app-one.exe", SelfService: true},
+						{RefPath: sharedPath, URL: "https://example.com/app-two.exe"},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	r := results[0]
+
+	if len(r.Software.Added) != 0 {
+		t.Fatalf("expected 0 added packages, got %d: %+v", len(r.Software.Added), r.Software.Added)
+	}
+	if len(r.Software.Deleted) != 0 {
+		t.Fatalf("expected 0 deleted packages, got %d: %+v", len(r.Software.Deleted), r.Software.Deleted)
+	}
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified package (app-one self_service), got %d: %+v", len(r.Software.Modified), r.Software.Modified)
+	}
+	if _, ok := r.Software.Modified[0].Fields["self_service"]; !ok {
+		t.Fatalf("expected self_service field diff on the changed package, got %+v", r.Software.Modified[0].Fields)
+	}
+}
+
 func TestDiffSoftwareFleetAndAppStore(t *testing.T) {
 	current := &api.FleetState{
 		Teams: []api.Team{
