@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/CampusTech/fleet-plan/internal/git"
+	"github.com/CampusTech/fleet-plan/internal/parser"
 )
 
 // ---------- version command ----------
@@ -751,6 +752,41 @@ func TestRunExitCodes(t *testing.T) {
 
 			if got != tt.want {
 				t.Errorf("exit code: got %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasNoTeam(t *testing.T) {
+	tests := []struct {
+		name  string
+		teams []parser.ParsedTeam
+		want  bool
+	}{
+		{name: "no teams at all"},
+		{
+			name:  "ordinary teams only",
+			teams: []parser.ParsedTeam{{Name: "Workstations", SourceFile: "teams/workstations.yml"}},
+		},
+		{
+			name: "teams layout no-team file",
+			teams: []parser.ParsedTeam{
+				{Name: "Workstations", SourceFile: "teams/workstations.yml"},
+				{Name: "No team", SourceFile: "teams/no-team.yml"},
+			},
+			want: true,
+		},
+		{
+			name:  "fleets layout unassigned file",
+			teams: []parser.ParsedTeam{{Name: "Unassigned", SourceFile: "fleets/unassigned.yml"}},
+			want:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasNoTeam(tt.teams); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
 	}

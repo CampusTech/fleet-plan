@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -1219,5 +1220,89 @@ func TestFetchAllNoTeamPermissionErrors(t *testing.T) {
 	}
 	if !state.NoTeam.PoliciesUnavailable || !state.NoTeam.ProfilesUnavailable || !state.NoTeam.ScriptsUnavailable {
 		t.Errorf("unavailable flags: got %+v, want all true", state.NoTeam)
+	}
+}
+
+func TestGetNoTeamPoliciesPagination(t *testing.T) {
+	// 250 results means "there may be more"; the client keeps paging until a
+	// short page comes back.
+	var pages []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		n := 250
+		if page != "0" {
+			n = 2
+		}
+		policies := make([]Policy, n)
+		for i := range policies {
+			policies[i] = Policy{ID: uint(i + 1), Name: fmt.Sprintf("p%s-%d", page, i)}
+		}
+		_ = json.NewEncoder(w).Encode(policiesResponse{Policies: policies})
+	}))
+	defer ts.Close()
+
+	policies, err := testClient(t, ts, "tok").GetNoTeamPolicies(context.Background())
+	if err != nil {
+		t.Fatalf("GetNoTeamPolicies: %v", err)
+	}
+	if len(policies) != 252 {
+		t.Errorf("got %d policies, want 252", len(policies))
+	}
+	if strings.Join(pages, ",") != "0,1" {
+		t.Errorf("pages requested: got %v, want [0 1]", pages)
+	}
+}
+
+func TestFetchAllNoTeamFatalErrors(t *testing.T) {
+	// A 403/404 degrades to "unavailable", but any other failure is a real
+	// problem and must not be reported as an empty bucket.
+	tests := []struct {
+		name     string
+		failPath string
+	}{
+		{"policies", "/api/v1/fleet/teams/0/policies"},
+		{"profiles", "/api/v1/fleet/configuration_profiles"},
+		{"scripts", "/api/v1/fleet/scripts"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, `{"teams":[]}`)
+			})
+			mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, `{"labels":[]}`)
+			})
+			mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, `{"fleet_maintained_apps":[]}`)
+			})
+			// Every no-team endpoint succeeds except the one under test,
+			// which returns a server error rather than a 403/404.
+			ok := map[string]string{
+				"/api/v1/fleet/teams/0/policies":       `{"policies":[]}`,
+				"/api/v1/fleet/configuration_profiles": `{"profiles":[]}`,
+				"/api/v1/fleet/scripts":                `{"scripts":[]}`,
+			}
+			for path, body := range ok {
+				if path == tt.failPath {
+					mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusInternalServerError)
+					})
+					continue
+				}
+				mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+					fmt.Fprint(w, body)
+				})
+			}
+
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			if _, err := testClient(t, ts, "tok").FetchAll(context.Background(), FetchOptions{NoTeam: true}); err == nil {
+				t.Fatalf("expected FetchAll to fail when %s returns 500", tt.name)
+			}
+		})
 	}
 }
