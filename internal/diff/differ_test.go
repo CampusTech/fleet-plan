@@ -2508,3 +2508,66 @@ func TestDiffProfilesWithoutEnricher(t *testing.T) {
 		t.Errorf("path field: got %q", got)
 	}
 }
+
+func TestWithProfileEnricher(t *testing.T) {
+	var o diffOptions
+	enricher := &fakeProfileEnricher{}
+	WithProfileEnricher(enricher)(&o)
+	if o.profileEnricher != enricher {
+		t.Error("WithProfileEnricher did not set the enricher")
+	}
+}
+
+func TestProfileContentChangeInconclusive(t *testing.T) {
+	const validPlist = `<plist version="1.0"><dict><key>A</key><string>1</string></dict></plist>`
+
+	tests := []struct {
+		name     string
+		cur      api.Profile
+		proposed parser.ParsedProfile
+		enricher ProfileEnricher
+	}{
+		{
+			name:     "no enricher configured",
+			cur:      api.Profile{ProfileUUID: "u"},
+			proposed: parser.ParsedProfile{Content: validPlist},
+		},
+		{
+			name:     "local file could not be read",
+			cur:      api.Profile{ProfileUUID: "u"},
+			proposed: parser.ParsedProfile{Content: ""},
+			enricher: &fakeProfileEnricher{content: map[string]string{"u": validPlist}},
+		},
+		{
+			// The download failed, so Content stays empty.
+			name:     "stored content unavailable",
+			cur:      api.Profile{ProfileUUID: "u"},
+			proposed: parser.ParsedProfile{Content: validPlist},
+			enricher: &fakeProfileEnricher{content: map[string]string{}},
+		},
+		{
+			name:     "stored content is not parseable",
+			cur:      api.Profile{ProfileUUID: "u"},
+			proposed: parser.ParsedProfile{Content: validPlist},
+			enricher: &fakeProfileEnricher{content: map[string]string{"u": "not a profile"}},
+		},
+		{
+			name:     "local content is not parseable",
+			cur:      api.Profile{ProfileUUID: "u"},
+			proposed: parser.ParsedProfile{Content: "not a profile"},
+			enricher: &fakeProfileEnricher{content: map[string]string{"u": validPlist}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			change, conclusive := profileContentChange(tt.cur, tt.proposed, tt.enricher)
+			if conclusive {
+				t.Errorf("conclusive: got true, want false (change=%+v)", change)
+			}
+			if change != nil {
+				t.Errorf("change: got %+v, want nil", change)
+			}
+		})
+	}
+}

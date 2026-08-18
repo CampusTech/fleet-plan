@@ -211,3 +211,39 @@ func TestProfileDiffSummaryNeverIncludesValues(t *testing.T) {
 		t.Errorf("summary: got %q", summary)
 	}
 }
+
+func TestPlistKeysMalformed(t *testing.T) {
+	// Each of these must return an error so diffProfiles falls back to
+	// name-only matching instead of reporting nonsense keys.
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"truncated document", `<plist><dict><key>a</key><string>b`},
+		{"truncated inside a key", `<plist><dict><key>abc`},
+		{"truncated inside a value", `<plist><dict><key>a</key><string>abc`},
+		{"stray angle bracket in a value", `<plist><dict><key>a</key><string><</string></dict></plist>`},
+		// Malformed markup outside any element the walker decodes directly,
+		// so the failure surfaces from the token loop rather than a decode.
+		{"stray angle bracket in an array", `<plist><dict><key>a</key><array><</array></dict></plist>`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := plistKeys([]byte(tt.content)); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+}
+
+func TestPlistKeysValueOutsideContainer(t *testing.T) {
+	// A plist whose root is a bare scalar rather than a dict: there is no
+	// container to name the value, so it lands under the empty path.
+	keys, err := plistKeys([]byte(`<plist version="1.0"><string>bare</string></plist>`))
+	if err != nil {
+		t.Fatalf("plistKeys: %v", err)
+	}
+	if keys[""] != "bare" {
+		t.Errorf("got %v, want the value under the empty path", keys)
+	}
+}

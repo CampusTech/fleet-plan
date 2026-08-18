@@ -1124,3 +1124,49 @@ func TestEnrichProfileContents(t *testing.T) {
 		t.Errorf("uuid-less profile: got content %q, want empty", profiles[2].Content)
 	}
 }
+
+func TestGetProfileContentTransportErrors(t *testing.T) {
+	t.Run("unbuildable request URL", func(t *testing.T) {
+		// A control character in the base URL cannot be turned into a request.
+		c := &Client{baseURL: "https://example.com/\x7f", token: "tok", httpClient: &http.Client{}}
+		if _, err := c.GetProfileContent(context.Background(), "u"); err == nil {
+			t.Error("expected an error building the request")
+		}
+	})
+
+	t.Run("connection failure", func(t *testing.T) {
+		ts := httptest.NewServer(http.NotFoundHandler())
+		url := ts.URL
+		ts.Close() // nothing is listening any more
+
+		t.Setenv("FLEET_PLAN_INSECURE", "1")
+		c, err := NewClient(url, "tok")
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		if _, err := c.GetProfileContent(context.Background(), "u"); err == nil {
+			t.Error("expected a transport error")
+		}
+	})
+
+	t.Run("truncated response body", func(t *testing.T) {
+		// Hijack the connection so the headers promise 512 bytes, then hang up
+		// after 7. The client must fail while reading rather than hand back a
+		// half profile that would diff as a pile of removed keys.
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			conn, buf, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 512\r\n\r\n<plist>")
+			_ = buf.Flush()
+		}))
+		defer ts.Close()
+
+		if _, err := testClient(t, ts, "tok").GetProfileContent(context.Background(), "u"); err == nil {
+			t.Error("expected an error reading the truncated body")
+		}
+	})
+}
