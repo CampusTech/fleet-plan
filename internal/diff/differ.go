@@ -302,6 +302,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 
 			result.Policies = diffPolicies(currentTeam.Policies, proposedTeam.Policies)
 			result.Queries = diffQueries(currentTeam.Queries, proposedTeam.Queries)
+			result.Config, result.SkippedConfigSections = diffTeamSettings(currentTeam.Settings, proposedTeam.Settings)
 
 			// enrichedSoftware holds the API software state with fleet-maintained
 			// app scripts populated. Hoisted here so the baseline subtraction
@@ -356,6 +357,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					baseDiff := DiffResult{}
 					baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
 					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
+					baseDiff.Config, _ = diffTeamSettings(currentTeam.Settings, baseTeam.Settings)
 					if !currentTeam.SoftwareUnavailable {
 						baseDiff.Software = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
@@ -371,6 +373,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					if cfg.verbose {
 						vlog(true, "[%s] baseline queries: %s", proposedTeam.Name, rdNames(baseDiff.Queries))
 					}
+					result.Config = subtractConfigChanges(result.Config, baseDiff.Config)
 					result.Policies = subtractResourceDiff(result.Policies, baseDiff.Policies)
 					result.Queries = subtractResourceDiff(result.Queries, baseDiff.Queries)
 					result.Software = subtractResourceDiff(result.Software, baseDiff.Software)
@@ -1468,6 +1471,90 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]Conf
 			}
 		})
 	}
+
+	return changes, skipped
+}
+
+// teamSettingsSections maps a sub-key of a team's `settings:` block to the
+// field on the Fleet team object that holds its live value. Everything Fleet
+// exposes on GET /teams is listed here; a sub-key that is not is reported as
+// skipped rather than silently dropped, so a new Fleet setting shows up as
+// "not diffed" instead of "no changes".
+var teamSettingsSections = map[string]string{
+	"webhook_settings":     "webhook_settings",
+	"host_expiry_settings": "host_expiry_settings",
+	"integrations":         "integrations",
+	"features":             "features",
+}
+
+// diffTeamSettings compares a team's live settings (the raw team object from
+// GET /teams) against the `settings:` block in its YAML, field by field. It
+// returns the changes plus the names of settings sub-keys that could not be
+// diffed.
+//
+// `secrets:` is never diffed: enroll secrets are credentials, and the diff
+// output ends up in CI logs and MR comments.
+func diffTeamSettings(current, proposed map[string]any) ([]ConfigChange, []string) {
+	if len(proposed) == 0 {
+		return nil, nil
+	}
+
+	var changes []ConfigChange
+	var skipped []string
+
+	for section, v := range proposed {
+		if section == "secrets" {
+			continue
+		}
+		apiKey, known := teamSettingsSections[section]
+		if !known {
+			skipped = append(skipped, "settings."+section)
+			continue
+		}
+		proposedMap, ok := v.(map[string]any)
+		if !ok {
+			skipped = append(skipped, "settings."+section)
+			continue
+		}
+		apiSection, ok := current[apiKey].(map[string]any)
+		if !ok {
+			// Fleet did not return this section (older server, or a token
+			// without permission to see it): say so rather than reporting
+			// every proposed key as a change.
+			skipped = append(skipped, "settings."+section)
+			continue
+		}
+
+		// Same guards as diffConfig: skip env var placeholders Fleet
+		// substitutes, and skip keys the API does not expose a value for,
+		// since "" cannot be distinguished from "not reported".
+		flattenMap(proposedMap, section, func(key, proposedVal string) {
+			if containsEnvVar(proposedVal) || proposedVal == "<nil>" || proposedVal == "" {
+				return
+			}
+			apiVal := getNestedValue(apiSection, strings.TrimPrefix(key, section+"."))
+			if apiVal == "<nil>" || apiVal == "" {
+				return
+			}
+			compareAPI, compareProposed := apiVal, proposedVal
+			if looksLikeJSON(apiVal) && looksLikeJSON(proposedVal) {
+				compareAPI = normalizeJSON(apiVal)
+				compareProposed = normalizeJSON(proposedVal)
+			}
+			if compareAPI != compareProposed {
+				changes = append(changes, ConfigChange{
+					Section: "settings",
+					Key:     key,
+					Old:     apiVal,
+					New:     proposedVal,
+				})
+			}
+		})
+	}
+
+	// flattenMap walks maps in random order; sort so output is stable.
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
+	sort.Strings(skipped)
 
 	return changes, skipped
 }

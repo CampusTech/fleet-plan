@@ -39,6 +39,21 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 			{
 				ID:   1,
 				Name: "Workstations",
+				// Live settings: host expiry off and the failing-policies
+				// webhook disabled, both of which the fixture turns on.
+				Settings: map[string]any{
+					"host_expiry_settings": map[string]any{
+						"host_expiry_enabled": false,
+						"host_expiry_window":  float64(0),
+					},
+					"webhook_settings": map[string]any{
+						"failing_policies_webhook": map[string]any{
+							"enable_failing_policies_webhook": false,
+							"host_batch_size":                 float64(0),
+						},
+					},
+					"features": map[string]any{"enable_software_inventory": true},
+				},
 				Policies: []api.Policy{
 					// FileVault exists but with a different (simpler) query → modified
 					{Name: "[macOS] FileVault Enabled", Query: "SELECT 1 FROM disk_encryption WHERE encrypted = 1;", Platform: "darwin", Critical: true},
@@ -2353,5 +2368,289 @@ func TestSubtractConfigChanges(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDiffTeamSettings(t *testing.T) {
+	// A trimmed-down version of what GET /teams returns for a team.
+	liveTeam := func() map[string]any {
+		return map[string]any{
+			"host_expiry_settings": map[string]any{
+				"host_expiry_enabled": false,
+				"host_expiry_window":  0,
+			},
+			"webhook_settings": map[string]any{
+				"failing_policies_webhook": map[string]any{
+					"enable_failing_policies_webhook": false,
+					"destination_url":                 "https://old.example.com/hook",
+					"host_batch_size":                 0,
+				},
+			},
+			"features": map[string]any{"enable_software_inventory": true},
+			"integrations": map[string]any{
+				"google_calendar": map[string]any{"enable_calendar_events": false},
+				"allow_list":      []any{"a", "b"},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		proposed    map[string]any
+		wantChanges []ConfigChange
+		wantSkipped []string
+	}{
+		{
+			name:     "no settings block",
+			proposed: nil,
+		},
+		{
+			name: "matching values produce no diff",
+			proposed: map[string]any{
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		},
+		{
+			name: "changed nested value",
+			proposed: map[string]any{
+				"host_expiry_settings": map[string]any{
+					"host_expiry_enabled": true,
+					"host_expiry_window":  30,
+				},
+			},
+			wantChanges: []ConfigChange{
+				{Section: "settings", Key: "host_expiry_settings.host_expiry_enabled", Old: "false", New: "true"},
+				{Section: "settings", Key: "host_expiry_settings.host_expiry_window", Old: "0", New: "30"},
+			},
+		},
+		{
+			name: "deeply nested webhook value",
+			proposed: map[string]any{
+				"webhook_settings": map[string]any{
+					"failing_policies_webhook": map[string]any{
+						"destination_url": "https://new.example.com/hook",
+					},
+				},
+			},
+			wantChanges: []ConfigChange{
+				{
+					Section: "settings",
+					Key:     "webhook_settings.failing_policies_webhook.destination_url",
+					Old:     "https://old.example.com/hook",
+					New:     "https://new.example.com/hook",
+				},
+			},
+		},
+		{
+			// Enroll secrets are credentials; they must never reach the diff,
+			// which lands in CI logs and MR comments.
+			name: "secrets are never diffed",
+			proposed: map[string]any{
+				"secrets": []any{map[string]any{"secret": "literal-not-a-placeholder"}},
+			},
+		},
+		{
+			// Fleet substitutes $VARS server-side, so the YAML value and the
+			// live value never match and comparing them is noise.
+			name: "env var placeholders are skipped",
+			proposed: map[string]any{
+				"webhook_settings": map[string]any{
+					"failing_policies_webhook": map[string]any{
+						"destination_url": "$WEBHOOK_URL",
+					},
+				},
+			},
+		},
+		{
+			// The API does not report a value for this key, so "" cannot be
+			// told apart from "Fleet has no opinion" -- reporting it would be
+			// a guess.
+			name: "key absent from the API section is not reported",
+			proposed: map[string]any{
+				"features": map[string]any{"enable_future_thing": true},
+			},
+		},
+		{
+			// List values are compared as serialized JSON, element order
+			// included -- the same rule the global config diff uses.
+			name: "reordered JSON list is reported as a change",
+			proposed: map[string]any{
+				"integrations": map[string]any{
+					"allow_list": []any{"b", "a"},
+				},
+			},
+			wantChanges: []ConfigChange{
+				{
+					Section: "settings",
+					Key:     "integrations.allow_list",
+					Old:     `["a","b"]`,
+					New:     `["b","a"]`,
+				},
+			},
+		},
+		{
+			name: "differing JSON lists are a change",
+			proposed: map[string]any{
+				"integrations": map[string]any{
+					"allow_list": []any{"a", "c"},
+				},
+			},
+			wantChanges: []ConfigChange{
+				{
+					Section: "settings",
+					Key:     "integrations.allow_list",
+					Old:     `["a","b"]`,
+					New:     `["a","c"]`,
+				},
+			},
+		},
+		{
+			name: "unknown settings sub-key is reported as skipped",
+			proposed: map[string]any{
+				"future_settings": map[string]any{"some_key": "value"},
+			},
+			wantSkipped: []string{"settings.future_settings"},
+		},
+		{
+			name: "sub-key absent from the API is reported as skipped",
+			proposed: map[string]any{
+				"mdm": map[string]any{"enable_disk_encryption": true},
+			},
+			wantSkipped: []string{"settings.mdm"},
+		},
+		{
+			name: "non-map sub-key is reported as skipped",
+			proposed: map[string]any{
+				"features": "not-a-map",
+			},
+			wantSkipped: []string{"settings.features"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changes, skipped := diffTeamSettings(liveTeam(), tt.proposed)
+
+			if len(changes) != len(tt.wantChanges) {
+				t.Fatalf("changes: got %d %+v, want %d %+v",
+					len(changes), changes, len(tt.wantChanges), tt.wantChanges)
+			}
+			for i := range changes {
+				if changes[i] != tt.wantChanges[i] {
+					t.Errorf("change %d:\n got %+v\nwant %+v", i, changes[i], tt.wantChanges[i])
+				}
+			}
+			if strings.Join(skipped, ",") != strings.Join(tt.wantSkipped, ",") {
+				t.Errorf("skipped: got %v, want %v", skipped, tt.wantSkipped)
+			}
+		})
+	}
+}
+
+func TestDiffTeamSettingsMissingAPISettings(t *testing.T) {
+	// A team object with no settings at all (older Fleet, or a token that
+	// cannot see them) must not report every proposed key as a change.
+	changes, skipped := diffTeamSettings(nil, map[string]any{
+		"features": map[string]any{"enable_software_inventory": false},
+	})
+	if len(changes) != 0 {
+		t.Errorf("changes: got %+v, want none", changes)
+	}
+	if len(skipped) != 1 || skipped[0] != "settings.features" {
+		t.Errorf("skipped: got %v, want [settings.features]", skipped)
+	}
+}
+
+func TestDiffTeamSettingsOrderIsStable(t *testing.T) {
+	current := map[string]any{
+		"features":             map[string]any{"a": "1", "b": "2", "c": "3"},
+		"host_expiry_settings": map[string]any{"host_expiry_window": 0},
+	}
+	proposed := map[string]any{
+		"features":             map[string]any{"a": "x", "b": "y", "c": "z"},
+		"host_expiry_settings": map[string]any{"host_expiry_window": 30},
+	}
+
+	// flattenMap walks maps in random order, so run repeatedly.
+	var first []string
+	for i := 0; i < 20; i++ {
+		changes, _ := diffTeamSettings(current, proposed)
+		var keys []string
+		for _, c := range changes {
+			keys = append(keys, c.Key)
+		}
+		if i == 0 {
+			first = keys
+			continue
+		}
+		if strings.Join(keys, ",") != strings.Join(first, ",") {
+			t.Fatalf("unstable order: got %v, first run %v", keys, first)
+		}
+	}
+	want := "features.a,features.b,features.c,host_expiry_settings.host_expiry_window"
+	if strings.Join(first, ",") != want {
+		t.Errorf("keys: got %v, want %s", first, want)
+	}
+}
+
+// TestDiffTestdataTeamSettings checks that the `settings:` block in the shared
+// fixture is diffed field by field against the team's live settings.
+func TestDiffTestdataTeamSettings(t *testing.T) {
+	root := testutil.TestdataRoot(t)
+
+	proposed, err := parser.ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+
+	current := &api.FleetState{
+		Teams: []api.Team{{
+			ID:   1,
+			Name: "Workstations",
+			Settings: map[string]any{
+				"host_expiry_settings": map[string]any{
+					"host_expiry_enabled": false,
+					"host_expiry_window":  float64(0),
+				},
+				"webhook_settings": map[string]any{
+					"failing_policies_webhook": map[string]any{
+						"enable_failing_policies_webhook": false,
+						"host_batch_size":                 float64(0),
+					},
+				},
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		}},
+	}
+
+	results := Diff(current, proposed, []string{"Workstations"}, nil)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+
+	got := make(map[string]string, len(results[0].Config))
+	for _, c := range results[0].Config {
+		if c.Section != "settings" {
+			t.Errorf("section: got %q, want settings", c.Section)
+		}
+		got[c.Key] = c.Old + " → " + c.New
+	}
+
+	want := map[string]string{
+		"host_expiry_settings.host_expiry_enabled":                                  "false → true",
+		"host_expiry_settings.host_expiry_window":                                   "0 → 30",
+		"webhook_settings.failing_policies_webhook.enable_failing_policies_webhook": "false → true",
+		"webhook_settings.failing_policies_webhook.host_batch_size":                 "0 → 100",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: got %q, want %q", k, got[k], v)
+		}
+	}
+	// features matches on both sides, and secrets must never appear.
+	for k := range got {
+		if strings.HasPrefix(k, "features") || strings.HasPrefix(k, "secrets") {
+			t.Errorf("unexpected change reported for %q", k)
+		}
 	}
 }
