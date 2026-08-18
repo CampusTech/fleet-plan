@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,10 +29,27 @@ func profileChecksum(content []byte) string {
 // and MR comments.
 func profileKeys(content []byte) (map[string]string, error) {
 	trimmed := strings.TrimSpace(string(content))
+
+	var (
+		keys map[string]string
+		err  error
+	)
 	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-		return jsonProfileKeys([]byte(trimmed))
+		keys, err = jsonProfileKeys([]byte(trimmed))
+	} else {
+		keys, err = plistKeys(content)
 	}
-	return plistKeys(content)
+	if err != nil {
+		return nil, err
+	}
+
+	// A document this grammar cannot flatten yields zero keys. Reporting that
+	// as "no keys differ" would call a changed profile unchanged, so treat it
+	// as a parse failure and let the caller fall back.
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no payload keys found")
+	}
+	return keys, nil
 }
 
 // jsonProfileKeys flattens a DDM declaration (.json).
@@ -159,15 +177,20 @@ func plistKeys(content []byte) (map[string]string, error) {
 	return keys, nil
 }
 
+// fleetVarRE matches a Fleet GitOps variable reference: $NAME or ${NAME}.
+// Deliberately narrower than a bare "$" test, so an edit to a value that
+// merely contains a dollar sign is still reported as a change.
+var fleetVarRE = regexp.MustCompile(`\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`)
+
 // profileKeyChanges compares two flattened profiles and returns the changed
 // key paths, marked "+" for keys only in the proposed profile and "-" for keys
-// only in the live one. Keys whose proposed value contains a "$" placeholder
+// only in the live one. Keys whose proposed value references a Fleet variable
 // are skipped: Fleet substitutes those server-side, so the stored value never
 // matches the file and the difference is not a real change.
 func profileKeyChanges(current, proposed map[string]string) []string {
 	var changed []string
 	for k, proposedVal := range proposed {
-		if containsEnvVar(proposedVal) {
+		if fleetVarRE.MatchString(proposedVal) {
 			continue
 		}
 		curVal, ok := current[k]

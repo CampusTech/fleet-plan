@@ -1170,3 +1170,20 @@ func TestGetProfileContentTransportErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestGetProfileContentOversized(t *testing.T) {
+	// An oversized profile must be an error rather than silently truncated
+	// content, which would diff as a pile of removed keys.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, maxProfileContentSize+10))
+	}))
+	defer ts.Close()
+
+	_, err := testClient(t, ts, "tok").GetProfileContent(context.Background(), "u")
+	if err == nil {
+		t.Fatal("expected an error for an oversized profile")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should say the profile is too large: %v", err)
+	}
+}

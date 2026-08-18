@@ -2361,11 +2361,13 @@ func TestSubtractConfigChanges(t *testing.T) {
 // tests can assert the checksum pre-filter actually avoids fetching.
 type fakeProfileEnricher struct {
 	content map[string]string // profile UUID → stored content
-	calls   int
+	calls   int               // number of batches requested
+	fetched int               // number of profiles across all batches
 }
 
 func (f *fakeProfileEnricher) EnrichProfileContents(_ context.Context, profiles []api.Profile) {
 	f.calls++
+	f.fetched += len(profiles)
 	for i := range profiles {
 		if c, ok := f.content[profiles[i].ProfileUUID]; ok {
 			profiles[i].Content = c
@@ -2525,43 +2527,40 @@ func TestProfileContentChangeInconclusive(t *testing.T) {
 		name     string
 		cur      api.Profile
 		proposed parser.ParsedProfile
-		enricher ProfileEnricher
 	}{
 		{
-			name:     "no enricher configured",
-			cur:      api.Profile{ProfileUUID: "u"},
-			proposed: parser.ParsedProfile{Content: validPlist},
-		},
-		{
 			name:     "local file could not be read",
-			cur:      api.Profile{ProfileUUID: "u"},
+			cur:      api.Profile{ProfileUUID: "u", Content: validPlist},
 			proposed: parser.ParsedProfile{Content: ""},
-			enricher: &fakeProfileEnricher{content: map[string]string{"u": validPlist}},
 		},
 		{
-			// The download failed, so Content stays empty.
+			// The download failed or was never attempted, so Content is empty.
 			name:     "stored content unavailable",
 			cur:      api.Profile{ProfileUUID: "u"},
 			proposed: parser.ParsedProfile{Content: validPlist},
-			enricher: &fakeProfileEnricher{content: map[string]string{}},
 		},
 		{
 			name:     "stored content is not parseable",
-			cur:      api.Profile{ProfileUUID: "u"},
+			cur:      api.Profile{ProfileUUID: "u", Content: "not a profile"},
 			proposed: parser.ParsedProfile{Content: validPlist},
-			enricher: &fakeProfileEnricher{content: map[string]string{"u": "not a profile"}},
 		},
 		{
 			name:     "local content is not parseable",
-			cur:      api.Profile{ProfileUUID: "u"},
+			cur:      api.Profile{ProfileUUID: "u", Content: validPlist},
 			proposed: parser.ParsedProfile{Content: "not a profile"},
-			enricher: &fakeProfileEnricher{content: map[string]string{"u": validPlist}},
+		},
+		{
+			// A valid plist this grammar cannot flatten yields no keys, which
+			// must not read as "nothing changed".
+			name:     "no payload keys could be extracted",
+			cur:      api.Profile{ProfileUUID: "u", Content: `<plist version="1.0"><dict/></plist>`},
+			proposed: parser.ParsedProfile{Content: `<plist version="1.0"><dict/></plist>`},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			change, conclusive := profileContentChange(tt.cur, tt.proposed, tt.enricher)
+			change, conclusive := profileContentChange(tt.cur, tt.proposed)
 			if conclusive {
 				t.Errorf("conclusive: got true, want false (change=%+v)", change)
 			}
@@ -2569,5 +2568,57 @@ func TestProfileContentChangeInconclusive(t *testing.T) {
 				t.Errorf("change: got %+v, want nil", change)
 			}
 		})
+	}
+}
+
+// Content is fetched in one batch, and only for profiles whose checksum does
+// not already prove them unchanged. One round trip per profile would serialize
+// the downloads and defeat the client's concurrency limit.
+func TestDiffProfilesFetchesInOneBatch(t *testing.T) {
+	const stored = `<plist version="1.0"><dict><key>A</key><string>1</string></dict></plist>`
+	changed := strings.Replace(stored, "<string>1</string>", "<string>2</string>", 1)
+
+	current := []api.Profile{
+		{ProfileUUID: "u1", Name: "P1", Checksum: profileChecksum([]byte(stored))}, // unchanged
+		{ProfileUUID: "u2", Name: "P2", Checksum: "stale"},
+		{ProfileUUID: "u3", Name: "P3", Checksum: "stale"},
+	}
+	proposed := []parser.ParsedProfile{
+		{Name: "P1", Content: stored},
+		{Name: "P2", Content: changed},
+		{Name: "P3", Content: changed},
+	}
+	enricher := &fakeProfileEnricher{content: map[string]string{"u1": stored, "u2": stored, "u3": stored}}
+
+	diff, _ := diffProfiles(current, proposed, nil, enricher)
+
+	if len(diff.Modified) != 2 {
+		t.Errorf("modified: got %d, want 2 (%+v)", len(diff.Modified), diff.Modified)
+	}
+	if enricher.calls != 1 {
+		t.Errorf("enrichment batches: got %d, want 1", enricher.calls)
+	}
+	// P1's checksum matched, so its content must not have been requested.
+	if enricher.fetched != 2 {
+		t.Errorf("profiles fetched: got %d, want 2", enricher.fetched)
+	}
+}
+
+// The baseline pass runs over the same profiles; it must reuse the content
+// fetched by the first pass rather than downloading everything again.
+func TestDiffProfilesReusesFetchedContentAcrossPasses(t *testing.T) {
+	const stored = `<plist version="1.0"><dict><key>A</key><string>1</string></dict></plist>`
+	changed := strings.Replace(stored, "<string>1</string>", "<string>2</string>", 1)
+
+	current := []api.Profile{{ProfileUUID: "u1", Name: "P1", Checksum: "stale"}}
+	proposed := []parser.ParsedProfile{{Name: "P1", Content: changed}}
+	baseline := []parser.ParsedProfile{{Name: "P1", Content: changed}}
+	enricher := &fakeProfileEnricher{content: map[string]string{"u1": stored}}
+
+	if _, _ = diffProfiles(current, proposed, nil, enricher); enricher.fetched != 1 {
+		t.Fatalf("first pass fetched %d profiles, want 1", enricher.fetched)
+	}
+	if _, _ = diffProfiles(current, baseline, nil, enricher); enricher.fetched != 1 {
+		t.Errorf("second pass re-fetched: total %d, want 1", enricher.fetched)
 	}
 }

@@ -247,3 +247,53 @@ func TestPlistKeysValueOutsideContainer(t *testing.T) {
 		t.Errorf("got %v, want the value under the empty path", keys)
 	}
 }
+
+func TestFleetVarMatching(t *testing.T) {
+	// Only actual variable references are skipped. A value that merely
+	// contains a dollar sign is a real value, and editing it is a real change.
+	tests := []struct {
+		name        string
+		current     string
+		proposed    string
+		wantChanged bool
+	}{
+		{name: "bare variable", current: "expanded", proposed: "$FLEET_SECRET", wantChanged: false},
+		{name: "braced variable", current: "expanded", proposed: "${FLEET_SECRET}", wantChanged: false},
+		{name: "variable inside a URL", current: "https://x/expanded", proposed: "https://x/$ENROLL_SECRET", wantChanged: false},
+		{name: "price string", current: "costs $5 per seat", proposed: "costs $9 per seat", wantChanged: true},
+		{name: "trailing dollar", current: "old$", proposed: "new$", wantChanged: true},
+		{name: "regex-ish value", current: "^a$", proposed: "^b$", wantChanged: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changed := profileKeyChanges(
+				map[string]string{"K": tt.current},
+				map[string]string{"K": tt.proposed},
+			)
+			if got := len(changed) > 0; got != tt.wantChanged {
+				t.Errorf("changed: got %v (%v), want %v", got, changed, tt.wantChanged)
+			}
+		})
+	}
+}
+
+func TestProfileKeysEmptyDocument(t *testing.T) {
+	// Valid documents that flatten to nothing must be errors, not "no keys
+	// differ" -- otherwise a changed profile reads as unchanged.
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"empty plist dict", `<plist version="1.0"><dict/></plist>`},
+		{"empty JSON object", `{}`},
+		{"empty JSON array", `[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := profileKeys([]byte(tt.content)); err == nil {
+				t.Error("expected an error so the caller falls back")
+			}
+		})
+	}
+}

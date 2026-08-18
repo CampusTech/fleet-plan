@@ -1254,7 +1254,17 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 	var diff ResourceDiff
 	var warnings []string
 
-	currentMap := make(map[string]api.Profile)
+	// Index by name rather than copying, so downloaded content can be written
+	// back into the caller's slice. That doubles as a cache: the baseline pass
+	// runs diffProfiles again over the same profiles and reuses the content
+	// instead of downloading everything a second time.
+	currentIdx := make(map[string]int, len(current))
+	for i := range current {
+		currentIdx[current[i].Name] = i
+	}
+	fetchProfileContents(current, currentIdx, proposed, enricher)
+
+	currentMap := make(map[string]api.Profile, len(current))
 	for _, p := range current {
 		currentMap[p.Name] = p
 	}
@@ -1286,7 +1296,7 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 				Name:   name,
 				Fields: fields,
 			})
-		} else if change, conclusive := profileContentChange(currentMap[name], p, enricher); conclusive {
+		} else if change, conclusive := profileContentChange(currentMap[name], p); conclusive {
 			// Content was compared: trust it over the git signal, which only
 			// says the file was touched, not that anything meaningful changed.
 			if change != nil {
@@ -1317,6 +1327,42 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 	return diff, warnings
 }
 
+// fetchProfileContents downloads, in one batch, the stored content of every
+// profile whose checksum does not already prove it unchanged. Profiles are
+// updated in place so a later pass over the same slice (baseline subtraction)
+// reuses what was fetched here.
+//
+// Batching matters: fetching one profile per call would serialize the round
+// trips and defeat the client's own concurrency limit.
+func fetchProfileContents(current []api.Profile, currentIdx map[string]int, proposed []parser.ParsedProfile, enricher ProfileEnricher) {
+	if enricher == nil {
+		return
+	}
+
+	var needed []api.Profile
+	for _, p := range proposed {
+		i, ok := currentIdx[p.Name]
+		if !ok || p.Content == "" || current[i].Content != "" || current[i].ProfileUUID == "" {
+			continue
+		}
+		if current[i].Checksum != "" && current[i].Checksum == profileChecksum([]byte(p.Content)) {
+			continue // unchanged; no need for the bytes
+		}
+		needed = append(needed, current[i])
+	}
+	if len(needed) == 0 {
+		return
+	}
+
+	enricher.EnrichProfileContents(context.Background(), needed)
+
+	for _, n := range needed {
+		if i, ok := currentIdx[n.Name]; ok {
+			current[i].Content = n.Content
+		}
+	}
+}
+
 // profileContentChange compares one profile's stored content against its local
 // file and reports which payload keys differ. The second return value is false
 // when no content-level comparison could be made, so the caller can fall back
@@ -1325,22 +1371,18 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 // Only key names ever reach the result. Profile payloads carry certificates,
 // passwords, and enroll secrets, and this output lands in CI logs and MR
 // comments.
-func profileContentChange(cur api.Profile, proposed parser.ParsedProfile, enricher ProfileEnricher) (*ResourceChange, bool) {
-	if enricher == nil || proposed.Content == "" {
+func profileContentChange(cur api.Profile, proposed parser.ParsedProfile) (*ResourceChange, bool) {
+	if proposed.Content == "" {
 		return nil, false
 	}
 
 	// Fleet reports the stored profile's MD5. A match means the stored profile
-	// is byte-identical to the local file: unchanged, and nothing to download.
+	// is byte-identical to the local file: unchanged, and nothing was
+	// downloaded for it.
 	if cur.Checksum != "" && cur.Checksum == profileChecksum([]byte(proposed.Content)) {
 		return nil, true
 	}
 
-	if cur.Content == "" {
-		profiles := []api.Profile{cur}
-		enricher.EnrichProfileContents(context.Background(), profiles)
-		cur = profiles[0]
-	}
 	if cur.Content == "" {
 		return nil, false
 	}

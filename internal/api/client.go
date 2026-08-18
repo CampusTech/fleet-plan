@@ -112,9 +112,10 @@ func isPermissionError(err error) bool {
 	return httpErr.StatusCode == http.StatusForbidden || httpErr.StatusCode == http.StatusNotFound
 }
 
-// maxProfileContentSize caps a downloaded configuration profile (1 MiB).
-// Apple's own profile size limits are far below this.
-const maxProfileContentSize = 1 << 20
+// maxProfileContentSize caps a downloaded configuration profile. It matches
+// the parser's own limit for reading a local profile, so both sides of the
+// comparison accept exactly the same range of files.
+const maxProfileContentSize = 10 << 20
 
 // ---------- Response types ----------
 
@@ -615,9 +616,15 @@ func (c *Client) GetProfileContent(ctx context.Context, profileUUID string) (str
 		return "", &HTTPError{StatusCode: resp.StatusCode, URL: u, Body: string(body)}
 	}
 
-	content, err := io.ReadAll(io.LimitReader(resp.Body, maxProfileContentSize))
+	// Read one byte past the cap so an oversized profile is an error rather
+	// than silently truncated content, which would diff as a pile of removed
+	// keys against the complete local file.
+	content, err := io.ReadAll(io.LimitReader(resp.Body, maxProfileContentSize+1))
 	if err != nil {
 		return "", fmt.Errorf("reading profile %s: %w", profileUUID, err)
+	}
+	if int64(len(content)) > maxProfileContentSize {
+		return "", fmt.Errorf("profile %s exceeds %d bytes", profileUUID, maxProfileContentSize)
 	}
 	return string(content), nil
 }
