@@ -25,6 +25,9 @@ jobs:
       - name: Test
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic -count=1 ./...
 
+      - name: Coverage floor
+        run: ./scripts/coverage-floor.sh coverage.txt 75
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:

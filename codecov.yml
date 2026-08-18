@@ -1,4 +1,8 @@
-# Coverage gates. The project floor is the 75% documented in CLAUDE.md.
+# Codecov reporting. The per-package floor is enforced in CI by
+# scripts/coverage-floor.sh, not here: the codecov project status configured
+# below has never posted a check on this repo, so it cannot be relied on as a
+# gate. Keep both -- the status is useful when it works, the script is the one
+# that actually blocks a merge.
 coverage:
   status:
     project:

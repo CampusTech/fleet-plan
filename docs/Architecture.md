@@ -155,4 +155,4 @@ This mirrors how fleet-gitops environment overlays work. The merged result is wr
 go test -race ./...
 ```
 
-All packages have `_test.go`. Tests use `testdata/` as a shared fleet-gitops fixture. Table-driven throughout. Coverage target: >= 75% per package, enforced by `codecov.yml` (current: 83.8% overall, lowest package 78.9%).
+All packages have `_test.go`. Tests use `testdata/` as a shared fleet-gitops fixture. Table-driven throughout. Coverage target: >= 75% per package, enforced in CI by `scripts/coverage-floor.sh` (current: 84.7% overall, lowest package 78.9%).
