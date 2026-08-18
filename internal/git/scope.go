@@ -113,16 +113,17 @@ func buildSearchPatterns(root, f string) []string {
 	return patterns
 }
 
-// teamsReferencingAny reads every team YAML in the repo (fleets/ or teams/)
-// and returns team names whose file content contains any of the given patterns
-// (plain string search).
+// teamsReferencingAny reads every team YAML in the repo's active team
+// directory and returns team names whose file content contains any of the
+// given patterns (plain string search). It scans only teamdir.Resolve(root)
+// — the same directory ParseRepo reads — so scope never picks a team from an
+// inactive layout that parsing would exclude.
 func teamsReferencingAny(root string, patterns []string) []string {
 	var matches []string
-	for _, dir := range teamdir.Names() {
-		for _, ext := range []string{"*.yml", "*.yaml"} {
-			m, _ := filepath.Glob(filepath.Join(root, dir, ext))
-			matches = append(matches, m...)
-		}
+	dir := teamdir.Resolve(root)
+	for _, ext := range []string{"*.yml", "*.yaml"} {
+		m, _ := filepath.Glob(filepath.Join(root, dir, ext))
+		matches = append(matches, m...)
 	}
 	seen := map[string]bool{}
 	var names []string

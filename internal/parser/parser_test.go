@@ -984,6 +984,67 @@ software:
 	}
 }
 
+// TestParseSoftwarePackageMultiItemListForm verifies that a package YAML file
+// written as a multi-element list yields one package per entry. Keeping only
+// the first entry (list[0]) would silently drop later packages and report them
+// as REMOVED.
+func TestParseSoftwarePackageMultiItemListForm(t *testing.T) {
+	root := t.TempDir()
+	teamsDir := filepath.Join(root, "teams")
+	softwareDir := filepath.Join(root, "software", "windows", "multi-app")
+	if err := os.MkdirAll(teamsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(softwareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Two-element YAML sequence in a single package file.
+	pkgYAML := `- url: https://downloads.example.com/app-one.exe
+  display_name: App One
+  self_service: true
+- url: https://downloads.example.com/app-two.exe
+  display_name: App Two
+`
+	if err := os.WriteFile(filepath.Join(softwareDir, "multi-app.yml"), []byte(pkgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: Workstations
+team_settings: {}
+software:
+  packages:
+    - path: ../software/windows/multi-app/multi-app.yml
+`
+	if err := os.WriteFile(filepath.Join(teamsDir, "workstations.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	pkgs := repo.Teams[0].Software.Packages
+	if len(pkgs) != 2 {
+		t.Fatalf("expected 2 packages from multi-item list file, got %d: %+v", len(pkgs), pkgs)
+	}
+	gotURLs := map[string]bool{}
+	for _, p := range pkgs {
+		gotURLs[p.URL] = true
+	}
+	for _, want := range []string{
+		"https://downloads.example.com/app-one.exe",
+		"https://downloads.example.com/app-two.exe",
+	} {
+		if !gotURLs[want] {
+			t.Errorf("missing package URL %q; got %v", want, gotURLs)
+		}
+	}
+}
+
 func TestIsNoTeam(t *testing.T) {
 	tests := []struct {
 		name       string

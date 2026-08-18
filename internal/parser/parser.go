@@ -447,32 +447,47 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 	for _, ref := range raw.Software.Packages {
 		pkgs, parseErrs := resolveSoftwareRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
-		for i := range pkgs {
-			canonicalRef := ""
-			if root != "" && pkgs[i].SourceFile != "" {
+
+		// Every package resolved from one ref shares the same source file, so
+		// the canonical ref is a property of the ref, not the individual
+		// package. Compute it once from the resolved file path.
+		canonicalRef := ""
+		if root != "" {
+			for i := range pkgs {
+				if pkgs[i].SourceFile == "" {
+					continue
+				}
 				if rel, err := filepath.Rel(root, pkgs[i].SourceFile); err == nil {
 					canonicalRef = NormalizeSoftwarePath(rel)
+					break
 				}
 			}
-			if canonicalRef == "" {
-				canonicalRef = NormalizeSoftwarePath(ref.Path)
+		}
+		if canonicalRef == "" {
+			canonicalRef = NormalizeSoftwarePath(ref.Path)
+		}
+
+		// Guard against the same package file being referenced twice in the
+		// same team YAML. A single file may legitimately define multiple
+		// packages (list form), so dedup at the ref level rather than per
+		// resolved package.
+		if canonicalRef != "" {
+			if seenSoftwareRefs[canonicalRef] {
+				errs = append(errs, ParseError{
+					File:    path,
+					Message: fmt.Sprintf("duplicate software package reference: %q", canonicalRef),
+				})
+				continue
 			}
+			seenSoftwareRefs[canonicalRef] = true
+		}
+
+		for i := range pkgs {
 			pkgs[i].RefPath = canonicalRef
 			// Team-level package entries can override package file settings.
 			// Apply explicit self_service override when present.
 			if ref.SelfService != nil {
 				pkgs[i].SelfService = *ref.SelfService
-			}
-			// Guard against duplicate package refs in the same team YAML.
-			if canonicalRef != "" {
-				if seenSoftwareRefs[canonicalRef] {
-					errs = append(errs, ParseError{
-						File:    path,
-						Message: fmt.Sprintf("duplicate software package reference: %q", canonicalRef),
-					})
-					continue
-				}
-				seenSoftwareRefs[canonicalRef] = true
 			}
 			team.Software.Packages = append(team.Software.Packages, pkgs[i])
 		}
@@ -675,44 +690,48 @@ func resolveSoftwareRef(root, baseDir, refPath, parentFile string) ([]ParsedSoft
 		return nil, errs
 	}
 
-	// A package file may be a single object (url: ...) or a single-element
-	// list (- url: ...). fleetctl gitops accepts both, so fall back to the
-	// list form when object unmarshaling fails (mirrors resolvePolicyRef /
-	// resolveQueryRef). Without this the list form is dropped and the package
-	// is falsely reported as REMOVED.
-	var raw rawSoftwarePackage
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		var list []rawSoftwarePackage
-		if err2 := yaml.Unmarshal(data, &list); err2 == nil && len(list) > 0 {
-			raw = list[0]
-		} else {
-			return nil, []ParseError{{File: resolved, Message: fmt.Sprintf("YAML parse error: %s", err)}}
-		}
-	}
-
-	pkg := ParsedSoftwarePackage{
-		URL:         raw.URL,
-		HashSHA256:  raw.HashSHA256,
-		SelfService: raw.SelfService,
-		SourceFile:  resolved,
+	// A package file may be a single object (url: ...) or a list of them
+	// (- url: ...). fleetctl gitops accepts both, so fall back to the list
+	// form when object unmarshaling fails (mirrors resolvePolicyRef /
+	// resolveQueryRef). Without this the list form is dropped and every
+	// package it holds is falsely reported as REMOVED. A multi-item list
+	// must yield one package per entry, not just the first.
+	var raws []rawSoftwarePackage
+	var single rawSoftwarePackage
+	if err := yaml.Unmarshal(data, &single); err == nil {
+		raws = []rawSoftwarePackage{single}
+	} else if err2 := yaml.Unmarshal(data, &raws); err2 != nil {
+		return nil, []ParseError{{File: resolved, Message: fmt.Sprintf("YAML parse error: %s", err)}}
 	}
 
 	pkgDir := filepath.Dir(resolved)
-	for _, ref := range []*rawPathRef{raw.InstallScript, raw.UninstallScript, raw.PreInstallQuery, raw.PostInstallScript} {
-		if ref == nil || ref.Path == "" {
-			continue
+	pkgs := make([]ParsedSoftwarePackage, 0, len(raws))
+	for _, raw := range raws {
+		pkg := ParsedSoftwarePackage{
+			URL:         raw.URL,
+			HashSHA256:  raw.HashSHA256,
+			SelfService: raw.SelfService,
+			SourceFile:  resolved,
 		}
-		scriptPath := filepath.Join(pkgDir, ref.Path)
-		if root != "" {
-			if err := safePath(root, scriptPath); err != nil {
-				errs = append(errs, ParseError{File: resolved, Message: err.Error()})
+
+		for _, ref := range []*rawPathRef{raw.InstallScript, raw.UninstallScript, raw.PreInstallQuery, raw.PostInstallScript} {
+			if ref == nil || ref.Path == "" {
 				continue
 			}
+			scriptPath := filepath.Join(pkgDir, ref.Path)
+			if root != "" {
+				if err := safePath(root, scriptPath); err != nil {
+					errs = append(errs, ParseError{File: resolved, Message: err.Error()})
+					continue
+				}
+			}
+			pkg.SourceFiles = append(pkg.SourceFiles, scriptPath)
 		}
-		pkg.SourceFiles = append(pkg.SourceFiles, scriptPath)
+
+		pkgs = append(pkgs, pkg)
 	}
 
-	return []ParsedSoftwarePackage{pkg}, errs
+	return pkgs, errs
 }
 
 // resolveFleetApp resolves path: references in a fleet-maintained app entry,
