@@ -2790,3 +2790,73 @@ func TestDiffNoTeamSoftwareIsReportedAsSkipped(t *testing.T) {
 		t.Errorf("missing software skip note in %v", r.Errors)
 	}
 }
+
+// A no-team change that is already merged to the base branch but not yet
+// deployed must not be reported again on every later MR.
+func TestDiffNoTeamBaselineSubtraction(t *testing.T) {
+	current := &api.FleetState{
+		Teams:  []api.Team{},
+		Labels: []api.Label{},
+		NoTeam: &api.NoTeam{
+			Policies: []api.Policy{{Name: "Existing", Query: "SELECT 1;"}},
+			Scripts:  []api.Script{{ID: 1, Name: "keep.sh", Content: "echo one\n"}},
+		},
+	}
+
+	// Already on the base branch: the added policy and the edited script.
+	baseline := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "No team",
+		SourceFile: "teams/no-team.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Existing", Query: "SELECT 1;"},
+			{Name: "Merged not deployed", Query: "SELECT 2;"},
+		},
+		Scripts: []parser.ParsedScript{{Name: "keep.sh", Content: "echo one\necho two\n"}},
+	}}}
+
+	// The MR adds one more policy on top of the base branch's state. The
+	// branch spells the bucket differently, which must not defeat matching.
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Unassigned",
+		SourceFile: "fleets/unassigned.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Existing", Query: "SELECT 1;"},
+			{Name: "Merged not deployed", Query: "SELECT 2;"},
+			{Name: "New in this MR", Query: "SELECT 3;"},
+		},
+		Scripts: []parser.ParsedScript{{Name: "keep.sh", Content: "echo one\necho two\n"}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil, WithBaseline(baseline))[0]
+
+	if len(r.Policies.Added) != 1 || r.Policies.Added[0].Name != "New in this MR" {
+		t.Errorf("policies added: got %+v, want only the MR's own addition", r.Policies.Added)
+	}
+	if !r.Scripts.IsEmpty() {
+		t.Errorf("scripts: got %+v, want empty (the edit is already on the base branch)", r.Scripts)
+	}
+}
+
+func TestDiffNoTeamQueriesAreReportedAsSkipped(t *testing.T) {
+	current := &api.FleetState{Teams: []api.Team{}, Labels: []api.Label{}, NoTeam: &api.NoTeam{}}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "No team",
+		SourceFile: "teams/no-team.yml",
+		Queries:    []parser.ParsedQuery{{Name: "Q1"}, {Name: "Q2"}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil)[0]
+
+	if !r.Queries.IsEmpty() {
+		t.Errorf("queries: got %+v, want empty (Fleet has no no-team query scope)", r.Queries)
+	}
+	found := false
+	for _, e := range r.Errors {
+		if strings.Contains(e, "queries diff skipped: 2 queries configured") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing query skip note in %v", r.Errors)
+	}
+}

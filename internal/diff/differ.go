@@ -216,6 +216,40 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedT
 			fmt.Sprintf("software diff skipped: %d software items configured, but Fleet does not report software for hosts on no team", n))
 	}
 
+	// Fleet scopes queries to a real team or to the global scope, so a
+	// no-team file cannot own them. The parser still accepts `queries:` and
+	// `reports:` in any team file, so say plainly that these are not diffed
+	// instead of dropping them without a word.
+	if n := len(proposed.Queries); n > 0 {
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("queries diff skipped: %d queries configured, but Fleet has no query scope for hosts on no team", n))
+	}
+
+	// Subtract changes that already exist between the base branch and Fleet,
+	// so a no-team change that is merged but not yet deployed is not reported
+	// again on every later MR.
+	if cfg.baseline != nil {
+		if baseTeam, ok := findBaselineNoTeam(cfg.baseline); ok {
+			base := DiffResult{}
+			if !current.PoliciesUnavailable {
+				base.Policies = diffPolicies(current.Policies, baseTeam.Policies)
+			}
+			if !current.ProfilesUnavailable {
+				base.Profiles, _ = diffProfiles(current.Profiles, baseTeam.Profiles, nil)
+			}
+			if !current.ScriptsUnavailable {
+				base.Scripts = diffScripts(current.Scripts, baseTeam.Scripts)
+			}
+			result.Policies = subtractResourceDiff(result.Policies, base.Policies)
+			result.Profiles = subtractResourceDiff(result.Profiles, base.Profiles)
+			result.Scripts = subtractResourceDiff(result.Scripts, base.Scripts)
+			vlog(cfg.verbose, "[%s] after baseline subtraction: policies=%s profiles=%s scripts=%s",
+				proposed.Name, rdSummary(result.Policies), rdSummary(result.Profiles), rdSummary(result.Scripts))
+		} else {
+			vlog(cfg.verbose, "[%s] no baseline no-team file found", proposed.Name)
+		}
+	}
+
 	vlog(cfg.verbose, "[%s] no-team diff: policies=%s profiles=%s scripts=%s",
 		proposed.Name, rdSummary(result.Policies), rdSummary(result.Profiles), rdSummary(result.Scripts))
 }
@@ -540,6 +574,19 @@ func filterChanges(changes []ResourceChange, keep func(string) bool) []ResourceC
 // ---------- Baseline subtraction ----------
 
 // findBaselineTeam looks up a team by name in the baseline parsed repo.
+// findBaselineNoTeam returns the baseline's no-team file. It matches on the
+// no-team identity rather than the display name, because the base branch and
+// the MR branch may spell it differently ("No team" vs "Unassigned") -- for
+// instance in the MR that migrates a repo from the teams/ layout to fleets/.
+func findBaselineNoTeam(baseline *parser.ParsedRepo) (parser.ParsedTeam, bool) {
+	for _, t := range baseline.Teams {
+		if parser.IsNoTeam(t.Name, t.SourceFile) {
+			return t, true
+		}
+	}
+	return parser.ParsedTeam{}, false
+}
+
 func findBaselineTeam(baseline *parser.ParsedRepo, name string) (parser.ParsedTeam, bool) {
 	for _, t := range baseline.Teams {
 		if strings.EqualFold(t.Name, name) {
