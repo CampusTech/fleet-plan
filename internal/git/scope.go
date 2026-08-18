@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/TsekNet/fleet-plan/internal/teamdir"
+	"github.com/CampusTech/fleet-plan/internal/teamdir"
 	"gopkg.in/yaml.v3"
 )
 

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TsekNet/fleet-plan/internal/diff"
+	"github.com/CampusTech/fleet-plan/internal/diff"
 )
 
 func assertOutputContains(t *testing.T, out string, substrings []string) {

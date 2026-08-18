@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/TsekNet/fleet-plan/internal/teamdir"
+	"github.com/CampusTech/fleet-plan/internal/teamdir"
 )
 
 // CheckoutBaseline extracts the base-branch versions of the given files into a

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TsekNet/fleet-plan/internal/teamdir"
+	"github.com/CampusTech/fleet-plan/internal/teamdir"
 )
 
 func TestExtractPathRefs(t *testing.T) {

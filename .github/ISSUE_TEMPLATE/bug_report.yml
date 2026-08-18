@@ -1,0 +1,49 @@
+name: Bug report
+description: fleet-plan produced a wrong diff, crashed, or misbehaved
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste Fleet API tokens, host data, or any student/personnel records.
+        Redact them before submitting. Security issues go to SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: fleet-plan version
+      description: Output of `fleet-plan --version`
+    validations:
+      required: true
+  - type: input
+    id: fleet-version
+    attributes:
+      label: Fleet server version
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the command you ran and the output (redacted).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: yaml
+    attributes:
+      label: Minimal fleet-gitops YAML that reproduces it
+      render: yaml
+    validations:
+      required: false
+  - type: dropdown
+    id: format
+    attributes:
+      label: Output format
+      options: [terminal, json, markdown, not applicable]
+    validations:
+      required: false

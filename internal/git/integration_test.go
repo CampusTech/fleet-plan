@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TsekNet/fleet-plan/internal/api"
-	"github.com/TsekNet/fleet-plan/internal/diff"
-	"github.com/TsekNet/fleet-plan/internal/output"
-	"github.com/TsekNet/fleet-plan/internal/parser"
+	"github.com/CampusTech/fleet-plan/internal/api"
+	"github.com/CampusTech/fleet-plan/internal/diff"
+	"github.com/CampusTech/fleet-plan/internal/output"
+	"github.com/CampusTech/fleet-plan/internal/parser"
 )
 
 // TestIntegrationGitFlag validates that a mock Fleet API + synthetic YAML repo

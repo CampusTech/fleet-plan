@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/TsekNet/fleet-plan/internal/api"
-	"github.com/TsekNet/fleet-plan/internal/parser"
+	"github.com/CampusTech/fleet-plan/internal/api"
+	"github.com/CampusTech/fleet-plan/internal/parser"
 )
 
 // wsRE collapses runs of whitespace (spaces, tabs, newlines) into a single space.

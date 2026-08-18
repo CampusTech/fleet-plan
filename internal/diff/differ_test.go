@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TsekNet/fleet-plan/internal/api"
-	"github.com/TsekNet/fleet-plan/internal/parser"
-	"github.com/TsekNet/fleet-plan/internal/testutil"
+	"github.com/CampusTech/fleet-plan/internal/api"
+	"github.com/CampusTech/fleet-plan/internal/parser"
+	"github.com/CampusTech/fleet-plan/internal/testutil"
 )
 
 // TestDiffTestdataAgainstMockAPI parses the shared testdata/ fixture and diffs

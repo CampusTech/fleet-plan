@@ -9,7 +9,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/TsekNet/fleet-plan/internal/diff"
+	"github.com/CampusTech/fleet-plan/internal/diff"
 )
 
 // Terminal color palette.
