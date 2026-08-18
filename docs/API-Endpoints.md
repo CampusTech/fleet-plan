@@ -9,6 +9,7 @@ All read-only. fleet-plan never writes to your Fleet server.
 | `GET` | `/api/v1/fleet/labels` | Label validation and host counts |
 | `GET` | `/api/v1/fleet/teams/{id}/policies` | Per-team policies |
 | `GET` | `/api/v1/fleet/global/policies` | Global policies (when default.yml parsed) |
+| `GET` | `/api/v1/fleet/teams/0/policies` | Policies for hosts on no team (when the repo has a no-team file) |
 | `GET` | `/api/v1/fleet/queries` | Per-team and global queries |
 | `GET` | `/api/v1/fleet/configuration_profiles` | MDM configuration profiles |
 | `GET` | `/api/v1/fleet/software/titles` | Managed software titles (paginated) |
@@ -18,5 +19,7 @@ All read-only. fleet-plan never writes to your Fleet server.
 | `GET` | `/api/v1/fleet/software/titles/{id}` | Software title detail |
 
 Global endpoints (`/config`, `/global/policies`, `/queries` with teamID=0) are only called when `default.yml` defines global sections.
+
+The "hosts on no team" bucket is fetched only when the repo has a no-team file (`teams/no-team.yml` or `fleets/unassigned.yml`). Its resources live behind `team_id=0` on `/configuration_profiles` and `/scripts`, and behind `/teams/0/policies` for policies — note that `/global/policies` is a *different* set. Fleet does not report configured software for this bucket, so software is not diffed there.
 
 HTTPS enforced unless `FLEET_PLAN_INSECURE=1`.

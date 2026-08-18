@@ -173,6 +173,87 @@ func noTeamSummary(t parser.ParsedTeam) string {
 	return strings.Join(parts, ", ")
 }
 
+// diffNoTeam fills in the diff for Fleet's "hosts on no team" bucket, whose
+// resources live behind team_id=0 rather than in the /teams list.
+//
+// When the bucket was not fetched (older Fleet, or the caller did not ask for
+// it), it falls back to reporting what the repo configures, so nothing
+// silently disappears from the plan.
+func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedTeam, changedFiles []string, cfg diffOptions) {
+	if current == nil {
+		if summary := noTeamSummary(proposed); summary != "" {
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("%s configured (no API diff available for hosts on no team)", summary))
+		}
+		return
+	}
+
+	if current.PoliciesUnavailable {
+		result.Errors = append(result.Errors, "policies diff skipped: API token lacks permission to read no-team policies")
+	} else {
+		result.Policies = diffPolicies(current.Policies, proposed.Policies)
+	}
+
+	if current.ProfilesUnavailable {
+		result.Errors = append(result.Errors, "profiles diff skipped: API token lacks permission to read profiles")
+	} else {
+		var warnings []string
+		result.Profiles, warnings = diffProfiles(current.Profiles, proposed.Profiles, changedFiles)
+		result.Errors = append(result.Errors, warnings...)
+	}
+
+	if current.ScriptsUnavailable {
+		result.Errors = append(result.Errors, "scripts diff skipped: API token lacks permission to read scripts")
+	} else {
+		result.Scripts = diffScripts(current.Scripts, proposed.Scripts)
+	}
+
+	// Fleet reports configured software only through the teams list, which
+	// excludes this bucket, so there is nothing to compare against. Say so
+	// rather than reporting every configured item as an addition.
+	if n := len(proposed.Software.Packages) + len(proposed.Software.FleetMaintained) + len(proposed.Software.AppStoreApps); n > 0 {
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("software diff skipped: %d software items configured, but Fleet does not report software for hosts on no team", n))
+	}
+
+	// Fleet scopes queries to a real team or to the global scope, so a
+	// no-team file cannot own them. The parser still accepts `queries:` and
+	// `reports:` in any team file, so say plainly that these are not diffed
+	// instead of dropping them without a word.
+	if n := len(proposed.Queries); n > 0 {
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("queries diff skipped: %d queries configured, but Fleet has no query scope for hosts on no team", n))
+	}
+
+	// Subtract changes that already exist between the base branch and Fleet,
+	// so a no-team change that is merged but not yet deployed is not reported
+	// again on every later MR.
+	if cfg.baseline != nil {
+		if baseTeam, ok := findBaselineNoTeam(cfg.baseline); ok {
+			base := DiffResult{}
+			if !current.PoliciesUnavailable {
+				base.Policies = diffPolicies(current.Policies, baseTeam.Policies)
+			}
+			if !current.ProfilesUnavailable {
+				base.Profiles, _ = diffProfiles(current.Profiles, baseTeam.Profiles, nil)
+			}
+			if !current.ScriptsUnavailable {
+				base.Scripts = diffScripts(current.Scripts, baseTeam.Scripts)
+			}
+			result.Policies = subtractResourceDiff(result.Policies, base.Policies)
+			result.Profiles = subtractResourceDiff(result.Profiles, base.Profiles)
+			result.Scripts = subtractResourceDiff(result.Scripts, base.Scripts)
+			vlog(cfg.verbose, "[%s] after baseline subtraction: policies=%s profiles=%s scripts=%s",
+				proposed.Name, rdSummary(result.Policies), rdSummary(result.Profiles), rdSummary(result.Scripts))
+		} else {
+			vlog(cfg.verbose, "[%s] no baseline no-team file found", proposed.Name)
+		}
+	}
+
+	vlog(cfg.verbose, "[%s] no-team diff: policies=%s profiles=%s scripts=%s",
+		proposed.Name, rdSummary(result.Policies), rdSummary(result.Profiles), rdSummary(result.Scripts))
+}
+
 // rdNames returns names of changes for debugging.
 func rdNames(rd ResourceDiff) string {
 	var names []string
@@ -277,13 +358,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			// returned by the /teams API endpoint. Skip the "will be created"
 			// warning for it, and don't list its resources as additions.
 			if parser.IsNoTeam(proposedTeam.Name, proposedTeam.SourceFile) {
-				// Can't deep-diff against API state since it's not in the teams
-				// list. Just report what the repo configures for it, so nothing
-				// silently disappears from the plan.
-				if summary := noTeamSummary(proposedTeam); summary != "" {
-					result.Errors = append(result.Errors,
-						fmt.Sprintf("%s configured (no API diff available for hosts on no team)", summary))
-				}
+				diffNoTeam(&result, current.NoTeam, proposedTeam, changedFiles, cfg)
 			} else {
 				// Genuinely new team
 				for _, p := range proposedTeam.Policies {
@@ -499,6 +574,19 @@ func filterChanges(changes []ResourceChange, keep func(string) bool) []ResourceC
 // ---------- Baseline subtraction ----------
 
 // findBaselineTeam looks up a team by name in the baseline parsed repo.
+// findBaselineNoTeam returns the baseline's no-team file. It matches on the
+// no-team identity rather than the display name, because the base branch and
+// the MR branch may spell it differently ("No team" vs "Unassigned") -- for
+// instance in the MR that migrates a repo from the teams/ layout to fleets/.
+func findBaselineNoTeam(baseline *parser.ParsedRepo) (parser.ParsedTeam, bool) {
+	for _, t := range baseline.Teams {
+		if parser.IsNoTeam(t.Name, t.SourceFile) {
+			return t, true
+		}
+	}
+	return parser.ParsedTeam{}, false
+}
+
 func findBaselineTeam(baseline *parser.ParsedRepo, name string) (parser.ParsedTeam, bool) {
 	for _, t := range baseline.Teams {
 		if strings.EqualFold(t.Name, name) {

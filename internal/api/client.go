@@ -122,6 +122,32 @@ type FleetState struct {
 	Config                 map[string]any // from GET /api/v1/fleet/config
 	GlobalPolicies         []Policy       // from GET /api/v1/fleet/global/policies (teamID=0)
 	GlobalQueries          []Query        // from GET /api/v1/fleet/queries (teamID=0)
+	NoTeam                 *NoTeam        // "hosts on no team" bucket, when requested
+}
+
+// NoTeam holds the current state of Fleet's "hosts on no team" bucket, which
+// the /teams endpoint does not return. Its resources live behind team_id=0.
+//
+// Queries are absent by design: Fleet scopes queries to a real team or to the
+// global scope, so a no-team file cannot define them. Managed software is
+// absent too — Fleet only reports configured packages through the teams list,
+// which excludes this bucket.
+type NoTeam struct {
+	Policies            []Policy
+	Profiles            []Profile
+	Scripts             []Script
+	PoliciesUnavailable bool
+	ProfilesUnavailable bool
+	ScriptsUnavailable  bool
+}
+
+// FetchOptions selects the optional scopes FetchAll retrieves. Both cost extra
+// round trips, so callers ask for them only when the repo defines them.
+type FetchOptions struct {
+	// Global fetches /config, /global/policies, and global queries.
+	Global bool
+	// NoTeam fetches the "hosts on no team" bucket (team_id=0).
+	NoTeam bool
 }
 
 // Team represents a Fleet team with its associated resources.
@@ -415,6 +441,35 @@ func (c *Client) GetPolicies(ctx context.Context, teamID uint) ([]Policy, error)
 	return all, nil
 }
 
+// GetNoTeamPolicies fetches the policies that belong to Fleet's "hosts on no
+// team" bucket. This is a different endpoint from GetPolicies(0), which
+// returns global policies. The response also carries inherited_policies (the
+// global ones, which apply to no-team hosts as well); those are deliberately
+// ignored, since a no-team YAML file does not own them.
+func (c *Client) GetNoTeamPolicies(ctx context.Context) ([]Policy, error) {
+	var all []Policy
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		var resp policiesResponse
+		if err := c.get(ctx, "/api/v1/fleet/teams/0/policies", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching no-team policies: %w", err)
+		}
+		all = append(all, resp.Policies...)
+		if len(resp.Policies) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k policies
+			break
+		}
+	}
+	return all, nil
+}
+
 // GetQueries fetches queries, optionally filtered by team, with pagination.
 func (c *Client) GetQueries(ctx context.Context, teamID uint) ([]Query, error) {
 	var all []Query
@@ -443,7 +498,9 @@ func (c *Client) GetQueries(ctx context.Context, teamID uint) ([]Query, error) {
 	return all, nil
 }
 
-// GetSoftware fetches managed (available_for_install) software titles for a team.
+// GetSoftware fetches managed (available_for_install) software titles for a
+// team. team_id is always sent; see GetProfiles for why teamID 0 must not be
+// omitted.
 // Uses available_for_install=true to exclude detected-only titles (OS packages,
 // browser extensions, etc.) and only return software deployed via Fleet/GitOps.
 // Paginates to collect all results.
@@ -456,9 +513,7 @@ func (c *Client) GetSoftware(ctx context.Context, teamID uint) ([]SoftwareTitle,
 			"page":                  {strconv.Itoa(page)},
 			"available_for_install": {"true"},
 		}
-		if teamID > 0 {
-			q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
-		}
+		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
 		var resp softwareResponse
 		if err := c.get(ctx, "/api/v1/fleet/software/titles", q, &resp); err != nil {
 			return nil, fmt.Errorf("fetching software (team %d): %w", teamID, err)
@@ -570,7 +625,9 @@ func (c *Client) GetLabels(ctx context.Context) ([]Label, error) {
 	return all, nil
 }
 
-// GetProfiles fetches MDM profiles for a team with pagination.
+// GetProfiles fetches MDM profiles for a team with pagination. team_id is
+// always sent: Fleet reads teamID 0 as the "hosts on no team" bucket, whereas
+// omitting the parameter returns every team's profiles.
 func (c *Client) GetProfiles(ctx context.Context, teamID uint) ([]Profile, error) {
 	var all []Profile
 	page := 0
@@ -579,9 +636,7 @@ func (c *Client) GetProfiles(ctx context.Context, teamID uint) ([]Profile, error
 			"per_page": {"250"},
 			"page":     {strconv.Itoa(page)},
 		}
-		if teamID > 0 {
-			q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
-		}
+		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
 		var resp profilesResponse
 		if err := c.get(ctx, "/api/v1/fleet/configuration_profiles", q, &resp); err != nil {
 			return nil, fmt.Errorf("fetching profiles (team %d): %w", teamID, err)
@@ -598,7 +653,8 @@ func (c *Client) GetProfiles(ctx context.Context, teamID uint) ([]Profile, error
 	return all, nil
 }
 
-// GetScripts fetches scripts for a team with pagination.
+// GetScripts fetches scripts for a team with pagination. team_id is always
+// sent; see GetProfiles for why teamID 0 must not be omitted.
 func (c *Client) GetScripts(ctx context.Context, teamID uint) ([]Script, error) {
 	var all []Script
 	page := 0
@@ -607,9 +663,7 @@ func (c *Client) GetScripts(ctx context.Context, teamID uint) ([]Script, error) 
 			"per_page": {"250"},
 			"page":     {strconv.Itoa(page)},
 		}
-		if teamID > 0 {
-			q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
-		}
+		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
 		var resp scriptsResponse
 		if err := c.get(ctx, "/api/v1/fleet/scripts", q, &resp); err != nil {
 			return nil, fmt.Errorf("fetching scripts (team %d): %w", teamID, err)
@@ -680,9 +734,13 @@ func (c *Client) getScriptContent(ctx context.Context, scriptID uint) (string, e
 // FetchAll concurrently fetches the complete Fleet state. Uses errgroup for
 // parallel requests. If fetchGlobal is true, also fetches global config,
 // policies, and queries (for default.yml diffing).
-func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState, error) {
+func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetState, error) {
 	state := &FleetState{}
-	wantGlobal := len(fetchGlobal) > 0 && fetchGlobal[0]
+	var o FetchOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	wantGlobal := o.Global
 
 	teams, err := c.GetTeams(ctx)
 	if err != nil {
@@ -739,6 +797,49 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 				return err
 			}
 			globalQueries = queries
+			return nil
+		})
+	}
+
+	// noTeam is written only by the goroutines below, then attached to state
+	// after g.Wait().
+	var noTeam *NoTeam
+	if o.NoTeam {
+		noTeam = &NoTeam{}
+		g.Go(func() error {
+			policies, err := c.GetNoTeamPolicies(gctx)
+			if err != nil {
+				if !isPermissionError(err) {
+					return err
+				}
+				noTeam.PoliciesUnavailable = true
+				return nil
+			}
+			noTeam.Policies = policies
+			return nil
+		})
+		g.Go(func() error {
+			profiles, err := c.GetProfiles(gctx, 0)
+			if err != nil {
+				if !isPermissionError(err) {
+					return err
+				}
+				noTeam.ProfilesUnavailable = true
+				return nil
+			}
+			noTeam.Profiles = profiles
+			return nil
+		})
+		g.Go(func() error {
+			scripts, err := c.GetScripts(gctx, 0)
+			if err != nil {
+				if !isPermissionError(err) {
+					return err
+				}
+				noTeam.ScriptsUnavailable = true
+				return nil
+			}
+			noTeam.Scripts = scripts
 			return nil
 		})
 	}
@@ -843,6 +944,13 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 		teamResults[i].SoftwareUnavailable = p.softwareUnavailable
 		teamResults[i].Scripts = p.scripts
 		teamResults[i].ScriptsUnavailable = p.scriptsUnavailable
+	}
+
+	if noTeam != nil {
+		if !noTeam.ScriptsUnavailable && len(noTeam.Scripts) > 0 {
+			c.EnrichScriptContents(ctx, noTeam.Scripts)
+		}
+		state.NoTeam = noTeam
 	}
 
 	// Enrich script contents (second pass, needs script IDs from first pass)

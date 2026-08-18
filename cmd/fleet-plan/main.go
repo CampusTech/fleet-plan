@@ -168,7 +168,10 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Fetching Fleet state from %s...\n", auth.URL)
 
-	state, err := client.FetchAll(ctx, repo.Global != nil)
+	state, err := client.FetchAll(ctx, api.FetchOptions{
+		Global: repo.Global != nil,
+		NoTeam: hasNoTeam(repo.Teams),
+	})
 	if err != nil {
 		return err
 	}
@@ -226,6 +229,18 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+// hasNoTeam reports whether the repo configures Fleet's "hosts on no team"
+// bucket. Fetching that bucket costs extra API calls, so it is only requested
+// when a file describes it.
+func hasNoTeam(teams []parser.ParsedTeam) bool {
+	for _, t := range teams {
+		if parser.IsNoTeam(t.Name, t.SourceFile) {
+			return true
+		}
+	}
+	return false
 }
 
 // errChangesDetected signals --detailed-exitcodes exit status 2. It is not a
