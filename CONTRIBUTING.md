@@ -20,7 +20,9 @@ Go 1.26+. CI runs the same commands plus `govulncheck ./...` and CodeQL. See [do
 - `go build ./...`, `go vet ./...`, and `go test -race ./...` all pass.
 - `golangci-lint run` reports no issues (`golangci-lint fmt` applies the gofmt /
   gofumpt formatting it expects).
-- New or changed logic has table-driven tests. Coverage should not regress.
+- New or changed logic has table-driven tests. Coverage stays at or above 75%
+  per package: `go test -coverprofile=coverage.txt ./... && ./scripts/coverage-floor.sh`
+  (CI runs the same check).
 - Commit messages use conventional prefixes (`feat:`, `fix:`, `test:`, `docs:`, `chore:`).
 
 ## Invariants that reviewers will enforce

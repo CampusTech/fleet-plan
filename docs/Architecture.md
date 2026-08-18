@@ -89,6 +89,8 @@ Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also pa
 
 Compares `FleetState` (API) vs `ParsedRepo` (YAML). Produces `[]DiffResult` per team + a `(global)` result when `default.yml` is present.
 
+Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched separately (`team_id=0`) and diffed like any other team for policies, profiles, and scripts, baseline subtraction included. Software and queries are reported as skipped there: Fleet exposes configured software only through the teams list, and scopes queries to a real team or the global scope. When the bucket was not fetched, the diff falls back to summarizing what the repo configures for it.
+
 | Resource | Match key | Diff fields |
 |----------|-----------|-------------|
 | Config sections (global) | dot-path key | old/new value (skips `$VAR` placeholders) |
@@ -157,4 +159,4 @@ This mirrors how fleet-gitops environment overlays work. The merged result is wr
 go test -race ./...
 ```
 
-All packages have `_test.go`. Tests use `testdata/` as a shared fleet-gitops fixture. Table-driven throughout. Coverage target: >= 75% per package, enforced by `codecov.yml` (current: 83.8% overall, lowest package 78.9%).
+All packages have `_test.go`. Tests use `testdata/` as a shared fleet-gitops fixture. Table-driven throughout. Coverage target: >= 75% per package, enforced in CI by `scripts/coverage-floor.sh` (current: 84.7% overall, lowest package 78.9%).

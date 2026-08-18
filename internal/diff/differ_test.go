@@ -2656,6 +2656,212 @@ func TestDiffTestdataTeamSettings(t *testing.T) {
 	}
 }
 
+// When the no-team bucket has been fetched (team_id=0), it is diffed like any
+// other team rather than being summarized.
+func TestDiffNoTeamDeepDiff(t *testing.T) {
+	current := &api.FleetState{
+		Teams:  []api.Team{},
+		Labels: []api.Label{},
+		NoTeam: &api.NoTeam{
+			Policies: []api.Policy{
+				// Same name, different query → modified.
+				{Name: "RingCentral uninstalled", Query: "SELECT 1;", Platform: "darwin"},
+				// Not in the YAML → deleted.
+				{Name: "Retired policy", Query: "SELECT 2;", PassingHostCount: 5},
+			},
+			Profiles: []api.Profile{{Name: "Conditional access", Platform: "darwin"}},
+			Scripts: []api.Script{
+				{ID: 1, Name: "uninstall-ringcentral.sh", Content: "echo one\n"},
+				{ID: 2, Name: "gone.ps1", Content: "Write-Host removed\n"},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Unassigned",
+		SourceFile: "fleets/unassigned.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "RingCentral uninstalled", Query: "SELECT 42;", Platform: "darwin"},
+			{Name: "Brand new policy", Query: "SELECT 3;"},
+		},
+		Profiles: []parser.ParsedProfile{
+			{Name: "Conditional access", Platform: "darwin", Path: "lib/profiles/ca.mobileconfig"},
+			{Name: "Newly added profile", Platform: "darwin", Path: "lib/profiles/new.mobileconfig"},
+		},
+		Scripts: []parser.ParsedScript{
+			{Name: "uninstall-ringcentral.sh", Content: "echo one\necho two\n"},
+		},
+	}}}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+
+	checks := []struct {
+		what string
+		got  ResourceDiff
+		a    int
+		m    int
+		d    int
+	}{
+		{"policies", r.Policies, 1, 1, 1},
+		{"profiles", r.Profiles, 1, 0, 0},
+		{"scripts", r.Scripts, 0, 1, 1},
+	}
+	for _, c := range checks {
+		if len(c.got.Added) != c.a || len(c.got.Modified) != c.m || len(c.got.Deleted) != c.d {
+			t.Errorf("%s: got +%d ~%d -%d, want +%d ~%d -%d", c.what,
+				len(c.got.Added), len(c.got.Modified), len(c.got.Deleted), c.a, c.m, c.d)
+		}
+	}
+
+	// The summary fallback must not appear once a real diff is available.
+	for _, e := range r.Errors {
+		if strings.Contains(e, "no API diff available") {
+			t.Errorf("summary fallback still reported: %q", e)
+		}
+		if strings.Contains(e, "does not exist in Fleet yet") {
+			t.Errorf("no-team reported as a new team: %q", e)
+		}
+	}
+}
+
+func TestDiffNoTeamUnavailableResources(t *testing.T) {
+	current := &api.FleetState{
+		Teams:  []api.Team{},
+		Labels: []api.Label{},
+		NoTeam: &api.NoTeam{
+			PoliciesUnavailable: true,
+			ProfilesUnavailable: true,
+			ScriptsUnavailable:  true,
+		},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "No team",
+		SourceFile: "teams/no-team.yml",
+		Policies:   []parser.ParsedPolicy{{Name: "P"}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil)[0]
+
+	// Nothing may be reported as an addition when the API side is unreadable:
+	// that would claim Fleet has none of it, which is not known.
+	if !r.Policies.IsEmpty() || !r.Profiles.IsEmpty() || !r.Scripts.IsEmpty() {
+		t.Errorf("expected empty diffs, got policies=%+v profiles=%+v scripts=%+v",
+			r.Policies, r.Profiles, r.Scripts)
+	}
+	for _, want := range []string{"policies diff skipped", "profiles diff skipped", "scripts diff skipped"} {
+		found := false
+		for _, e := range r.Errors {
+			if strings.Contains(e, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing %q in %v", want, r.Errors)
+		}
+	}
+}
+
+func TestDiffNoTeamSoftwareIsReportedAsSkipped(t *testing.T) {
+	current := &api.FleetState{Teams: []api.Team{}, Labels: []api.Label{}, NoTeam: &api.NoTeam{}}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Unassigned",
+		SourceFile: "fleets/unassigned.yml",
+		Software: parser.ParsedSoftware{
+			Packages:        []parser.ParsedSoftwarePackage{{URL: "https://example.com/a.pkg"}},
+			FleetMaintained: []parser.ParsedFleetApp{{Slug: "zoom/darwin"}},
+		},
+	}}}
+
+	r := Diff(current, proposed, nil, nil)[0]
+
+	if !r.Software.IsEmpty() {
+		t.Errorf("software: got %+v, want empty (nothing to compare against)", r.Software)
+	}
+	found := false
+	for _, e := range r.Errors {
+		if strings.Contains(e, "software diff skipped: 2 software items configured") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing software skip note in %v", r.Errors)
+	}
+}
+
+// A no-team change that is already merged to the base branch but not yet
+// deployed must not be reported again on every later MR.
+func TestDiffNoTeamBaselineSubtraction(t *testing.T) {
+	current := &api.FleetState{
+		Teams:  []api.Team{},
+		Labels: []api.Label{},
+		NoTeam: &api.NoTeam{
+			Policies: []api.Policy{{Name: "Existing", Query: "SELECT 1;"}},
+			Scripts:  []api.Script{{ID: 1, Name: "keep.sh", Content: "echo one\n"}},
+		},
+	}
+
+	// Already on the base branch: the added policy and the edited script.
+	baseline := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "No team",
+		SourceFile: "teams/no-team.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Existing", Query: "SELECT 1;"},
+			{Name: "Merged not deployed", Query: "SELECT 2;"},
+		},
+		Scripts: []parser.ParsedScript{{Name: "keep.sh", Content: "echo one\necho two\n"}},
+	}}}
+
+	// The MR adds one more policy on top of the base branch's state. The
+	// branch spells the bucket differently, which must not defeat matching.
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Unassigned",
+		SourceFile: "fleets/unassigned.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Existing", Query: "SELECT 1;"},
+			{Name: "Merged not deployed", Query: "SELECT 2;"},
+			{Name: "New in this MR", Query: "SELECT 3;"},
+		},
+		Scripts: []parser.ParsedScript{{Name: "keep.sh", Content: "echo one\necho two\n"}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil, WithBaseline(baseline))[0]
+
+	if len(r.Policies.Added) != 1 || r.Policies.Added[0].Name != "New in this MR" {
+		t.Errorf("policies added: got %+v, want only the MR's own addition", r.Policies.Added)
+	}
+	if !r.Scripts.IsEmpty() {
+		t.Errorf("scripts: got %+v, want empty (the edit is already on the base branch)", r.Scripts)
+	}
+}
+
+func TestDiffNoTeamQueriesAreReportedAsSkipped(t *testing.T) {
+	current := &api.FleetState{Teams: []api.Team{}, Labels: []api.Label{}, NoTeam: &api.NoTeam{}}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "No team",
+		SourceFile: "teams/no-team.yml",
+		Queries:    []parser.ParsedQuery{{Name: "Q1"}, {Name: "Q2"}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil)[0]
+
+	if !r.Queries.IsEmpty() {
+		t.Errorf("queries: got %+v, want empty (Fleet has no no-team query scope)", r.Queries)
+	}
+	found := false
+	for _, e := range r.Errors {
+		if strings.Contains(e, "queries diff skipped: 2 queries configured") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing query skip note in %v", r.Errors)
+	}
+}
+
 // fakeProfileEnricher serves canned profile content and counts downloads, so
 // tests can assert the checksum pre-filter actually avoids fetching.
 type fakeProfileEnricher struct {
@@ -2919,5 +3125,42 @@ func TestDiffProfilesReusesFetchedContentAcrossPasses(t *testing.T) {
 	}
 	if _, _ = diffProfiles(current, baseline, nil, enricher); enricher.fetched != 1 {
 		t.Errorf("second pass re-fetched: total %d, want 1", enricher.fetched)
+	}
+}
+
+// The no-team bucket goes through the same profile path as any team, so its
+// profiles get content-level diffs too rather than name-only matching.
+func TestDiffNoTeamProfileContent(t *testing.T) {
+	const stored = `<plist version="1.0"><dict>
+  <key>PayloadDisplayName</key><string>Conditional access</string>
+  <key>PayloadOrganization</key><string>Campus</string>
+</dict></plist>`
+	changed := strings.Replace(stored, "<string>Campus</string>", "<string>Campus IT</string>", 1)
+
+	current := &api.FleetState{
+		Teams:  []api.Team{},
+		Labels: []api.Label{},
+		NoTeam: &api.NoTeam{
+			Profiles: []api.Profile{{ProfileUUID: "u1", Name: "Conditional access", Checksum: "stale"}},
+		},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Unassigned",
+		SourceFile: "fleets/unassigned.yml",
+		Profiles: []parser.ParsedProfile{{
+			Name:    "Conditional access",
+			Path:    "lib/unassigned/profiles/ca.mobileconfig",
+			Content: changed,
+		}},
+	}}}
+	enricher := &fakeProfileEnricher{content: map[string]string{"u1": stored}}
+
+	r := Diff(current, proposed, nil, nil, WithProfileEnricher(enricher))[0]
+
+	if len(r.Profiles.Modified) != 1 {
+		t.Fatalf("modified: got %+v, want 1", r.Profiles)
+	}
+	if got := r.Profiles.Modified[0].Warning; got != "1 key changed: PayloadOrganization" {
+		t.Errorf("warning: got %q", got)
 	}
 }

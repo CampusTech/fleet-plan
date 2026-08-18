@@ -369,7 +369,10 @@ func TestGetProfilesTeamID(t *testing.T) {
 		teamID     uint
 		wantTeamID string
 	}{
-		{name: "global profiles", teamID: 0, wantTeamID: ""},
+		// teamID 0 is Fleet's "hosts on no team" bucket, so the parameter
+		// must be sent explicitly. Omitting it would return every team's
+		// profiles instead.
+		{name: "no-team profiles", teamID: 0, wantTeamID: "0"},
 		{name: "team 5 profiles", teamID: 5, wantTeamID: "5"},
 	}
 
@@ -596,7 +599,7 @@ func TestFetchAllWithGlobal(t *testing.T) {
 	defer ts.Close()
 
 	c := testClient(t, ts, "tok")
-	state, err := c.FetchAll(context.Background(), true)
+	state, err := c.FetchAll(context.Background(), FetchOptions{Global: true})
 	if err != nil {
 		t.Fatalf("FetchAll: %v", err)
 	}
@@ -1088,6 +1091,217 @@ func TestFetchAllFleetMaintainedFallback(t *testing.T) {
 			}
 			if len(state.FleetMaintainedCatalog) != tt.wantCatalogLen {
 				t.Errorf("catalog len: got %d, want %d", len(state.FleetMaintainedCatalog), tt.wantCatalogLen)
+			}
+		})
+	}
+}
+
+// ---------- no-team bucket ----------
+
+func TestGetNoTeamPolicies(t *testing.T) {
+	// /teams/0/policies returns the bucket's own policies plus the global ones
+	// it inherits. Only the former belong to a no-team YAML file.
+	const body = `{
+		"policies": [{"id": 1, "name": "No-team policy", "query": "SELECT 1;"}],
+		"inherited_policies": [{"id": 99, "name": "Global policy", "query": "SELECT 2;"}]
+	}`
+
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		fmt.Fprint(w, body)
+	}))
+	defer ts.Close()
+
+	policies, err := testClient(t, ts, "tok").GetNoTeamPolicies(context.Background())
+	if err != nil {
+		t.Fatalf("GetNoTeamPolicies: %v", err)
+	}
+	if gotPath != "/api/v1/fleet/teams/0/policies" {
+		t.Errorf("path: got %q", gotPath)
+	}
+	if len(policies) != 1 || policies[0].Name != "No-team policy" {
+		t.Fatalf("policies: got %+v, want only the no-team policy", policies)
+	}
+}
+
+func TestFetchAllNoTeam(t *testing.T) {
+	var noTeamParams struct{ profiles, scripts string }
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"teams":[]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"labels":[]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"fleet_maintained_apps":[]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/teams/0/policies", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"policies":[{"id":1,"name":"No-team policy"}],"inherited_policies":[{"id":9,"name":"Global"}]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+		noTeamParams.profiles = r.URL.Query().Get("team_id")
+		fmt.Fprint(w, `{"profiles":[{"profile_uuid":"u1","name":"Conditional access"}]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/scripts", func(w http.ResponseWriter, r *http.Request) {
+		noTeamParams.scripts = r.URL.Query().Get("team_id")
+		fmt.Fprint(w, `{"scripts":[{"id":0,"name":"uninstall.sh"}]}`)
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	t.Run("requested", func(t *testing.T) {
+		state, err := testClient(t, ts, "tok").FetchAll(context.Background(), FetchOptions{NoTeam: true})
+		if err != nil {
+			t.Fatalf("FetchAll: %v", err)
+		}
+		if state.NoTeam == nil {
+			t.Fatal("NoTeam: got nil, want the fetched bucket")
+		}
+		if len(state.NoTeam.Policies) != 1 || state.NoTeam.Policies[0].Name != "No-team policy" {
+			t.Errorf("policies: got %+v", state.NoTeam.Policies)
+		}
+		if len(state.NoTeam.Profiles) != 1 || len(state.NoTeam.Scripts) != 1 {
+			t.Errorf("profiles=%d scripts=%d, want 1 each", len(state.NoTeam.Profiles), len(state.NoTeam.Scripts))
+		}
+		// team_id=0 must be sent explicitly; omitting it returns every team's
+		// resources instead of the no-team bucket's.
+		if noTeamParams.profiles != "0" || noTeamParams.scripts != "0" {
+			t.Errorf("team_id params: profiles=%q scripts=%q, want 0 for both",
+				noTeamParams.profiles, noTeamParams.scripts)
+		}
+	})
+
+	t.Run("not requested", func(t *testing.T) {
+		state, err := testClient(t, ts, "tok").FetchAll(context.Background())
+		if err != nil {
+			t.Fatalf("FetchAll: %v", err)
+		}
+		if state.NoTeam != nil {
+			t.Errorf("NoTeam: got %+v, want nil when not requested", state.NoTeam)
+		}
+	})
+}
+
+func TestFetchAllNoTeamPermissionErrors(t *testing.T) {
+	// A gitops-scoped token may be refused on some of these endpoints. That
+	// must degrade to "skipped", not fail the whole diff.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"teams":[]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"labels":[]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"fleet_maintained_apps":[]}`)
+	})
+	mux.HandleFunc("/api/v1/fleet/teams/0/policies", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/api/v1/fleet/scripts", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	state, err := testClient(t, ts, "tok").FetchAll(context.Background(), FetchOptions{NoTeam: true})
+	if err != nil {
+		t.Fatalf("FetchAll: %v", err)
+	}
+	if state.NoTeam == nil {
+		t.Fatal("NoTeam: got nil")
+	}
+	if !state.NoTeam.PoliciesUnavailable || !state.NoTeam.ProfilesUnavailable || !state.NoTeam.ScriptsUnavailable {
+		t.Errorf("unavailable flags: got %+v, want all true", state.NoTeam)
+	}
+}
+
+func TestGetNoTeamPoliciesPagination(t *testing.T) {
+	// 250 results means "there may be more"; the client keeps paging until a
+	// short page comes back.
+	var pages []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		n := 250
+		if page != "0" {
+			n = 2
+		}
+		policies := make([]Policy, n)
+		for i := range policies {
+			policies[i] = Policy{ID: uint(i + 1), Name: fmt.Sprintf("p%s-%d", page, i)}
+		}
+		_ = json.NewEncoder(w).Encode(policiesResponse{Policies: policies})
+	}))
+	defer ts.Close()
+
+	policies, err := testClient(t, ts, "tok").GetNoTeamPolicies(context.Background())
+	if err != nil {
+		t.Fatalf("GetNoTeamPolicies: %v", err)
+	}
+	if len(policies) != 252 {
+		t.Errorf("got %d policies, want 252", len(policies))
+	}
+	if strings.Join(pages, ",") != "0,1" {
+		t.Errorf("pages requested: got %v, want [0 1]", pages)
+	}
+}
+
+func TestFetchAllNoTeamFatalErrors(t *testing.T) {
+	// A 403/404 degrades to "unavailable", but any other failure is a real
+	// problem and must not be reported as an empty bucket.
+	tests := []struct {
+		name     string
+		failPath string
+	}{
+		{"policies", "/api/v1/fleet/teams/0/policies"},
+		{"profiles", "/api/v1/fleet/configuration_profiles"},
+		{"scripts", "/api/v1/fleet/scripts"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, `{"teams":[]}`)
+			})
+			mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, `{"labels":[]}`)
+			})
+			mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, `{"fleet_maintained_apps":[]}`)
+			})
+			// Every no-team endpoint succeeds except the one under test,
+			// which returns a server error rather than a 403/404.
+			ok := map[string]string{
+				"/api/v1/fleet/teams/0/policies":       `{"policies":[]}`,
+				"/api/v1/fleet/configuration_profiles": `{"profiles":[]}`,
+				"/api/v1/fleet/scripts":                `{"scripts":[]}`,
+			}
+			for path, body := range ok {
+				if path == tt.failPath {
+					mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusInternalServerError)
+					})
+					continue
+				}
+				mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+					fmt.Fprint(w, body)
+				})
+			}
+
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			if _, err := testClient(t, ts, "tok").FetchAll(context.Background(), FetchOptions{NoTeam: true}); err == nil {
+				t.Fatalf("expected FetchAll to fail when %s returns 500", tt.name)
 			}
 		})
 	}
