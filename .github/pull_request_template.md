@@ -11,7 +11,7 @@
 - [ ] `go build ./...`
 - [ ] `go vet ./...`
 - [ ] `go test -race ./...`
-- [ ] `gofmt -l .` prints nothing
+- [ ] `gofmt -l` prints nothing for the Go files this PR touches
 - [ ] Coverage did not regress
 - [ ] Validated against a live Fleet instance (describe below, redact tokens/host data)
 

@@ -17,7 +17,9 @@ Go 1.26+. See [docs/Architecture.md](docs/Architecture.md) for data flow and pac
 ## Before opening a pull request
 
 - `go build ./...`, `go vet ./...`, and `go test -race ./...` all pass.
-- `gofmt` clean (`gofmt -l .` prints nothing).
+- `gofmt` clean on the Go files you touched (`gofmt -l <files>` prints nothing). A
+  repo-wide `gofmt` cleanup lands with golangci-lint; until then `gofmt -l .` still
+  reports pre-existing drift in files you did not change.
 - New or changed logic has table-driven tests. Coverage should not regress.
 - Commit messages use conventional prefixes (`feat:`, `fix:`, `test:`, `docs:`, `chore:`).
 
