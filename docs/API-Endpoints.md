@@ -5,7 +5,7 @@ All read-only. fleet-plan never writes to your Fleet server.
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET` | `/api/v1/fleet/config` | Global config (org_settings, agent_options, controls) |
-| `GET` | `/api/v1/fleet/teams` | Team list + embedded software config |
+| `GET` | `/api/v1/fleet/teams` | Team list + embedded software config + team settings (`webhook_settings`, `host_expiry_settings`, `integrations`, `features`) |
 | `GET` | `/api/v1/fleet/labels` | Label validation and host counts |
 | `GET` | `/api/v1/fleet/teams/{id}/policies` | Per-team policies |
 | `GET` | `/api/v1/fleet/global/policies` | Global policies (when default.yml parsed) |

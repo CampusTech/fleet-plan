@@ -139,6 +139,29 @@ type Team struct {
 	SoftwareUnavailable bool // true when GetSoftware returned 403/404 (token lacks permission)
 	ProfilesUnavailable bool // true when GetProfiles returned 403/404 (token lacks permission)
 	ScriptsUnavailable  bool // true when GetScripts returned 403/404 (token lacks permission)
+
+	// Settings holds the raw team object as returned by the API, so the
+	// settings blocks a team YAML configures (webhook_settings,
+	// host_expiry_settings, integrations, features) can be diffed field by
+	// field. Populated by UnmarshalJSON.
+	Settings map[string]any `json:"-"`
+}
+
+// UnmarshalJSON decodes a team twice: once into the typed struct and once into
+// a generic map kept in Settings. The map is what the settings diff compares
+// against, and keeping it avoids having to model every settings sub-key Fleet
+// may add.
+func (t *Team) UnmarshalJSON(data []byte) error {
+	type teamAlias Team // avoid recursing into this method
+	var alias teamAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*t = Team(alias)
+	// A team that does not decode as an object is a server-side surprise, not
+	// something to fail the whole diff over: leave Settings nil.
+	_ = json.Unmarshal(data, &t.Settings)
+	return nil
 }
 
 // TeamSoftware mirrors /api/v1/fleet/teams[].software for managed software

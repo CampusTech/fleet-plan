@@ -108,7 +108,12 @@ type ParsedGlobal struct {
 
 // ParsedTeam represents a single team's configuration.
 type ParsedTeam struct {
-	Name       string
+	Name string
+	// Settings holds the team's `settings:` block (or the older
+	// `team_settings:` spelling) as a nested map: webhook_settings,
+	// host_expiry_settings, integrations, features. Diffed field by field
+	// against the matching keys on the Fleet team object.
+	Settings   map[string]any
 	Policies   []ParsedPolicy
 	Queries    []ParsedQuery
 	Software   ParsedSoftware
@@ -220,7 +225,11 @@ func (e ParseError) Error() string {
 // ---------- Team YAML raw types (for initial parsing) ----------
 
 type rawTeamFile struct {
-	Name         string       `yaml:"name"`
+	Name string `yaml:"name"`
+	// Settings is the modern spelling of team_settings. fleetctl gitops
+	// accepts both; when both are present the newer key wins, matching how
+	// Fleet resolves them.
+	Settings     yaml.Node    `yaml:"settings"`
 	TeamSettings yaml.Node    `yaml:"team_settings"`
 	OrgSettings  yaml.Node    `yaml:"org_settings"`
 	AgentOptions yaml.Node    `yaml:"agent_options"`
@@ -315,6 +324,26 @@ func MatchesAnyTeam(name string, filters []string) bool {
 		}
 	}
 	return false
+}
+
+// decodeSettingsNode decodes the first non-empty settings node into a nested
+// map. Callers pass `settings:` before `team_settings:` so the modern spelling
+// wins when a file carries both. Returns nil when neither is set or the node
+// is not a mapping, which callers treat as "nothing to diff".
+func decodeSettingsNode(nodes ...yaml.Node) map[string]any {
+	for _, n := range nodes {
+		if n.IsZero() {
+			continue
+		}
+		var m map[string]any
+		if err := n.Decode(&m); err != nil {
+			continue
+		}
+		if len(m) > 0 {
+			return m
+		}
+	}
+	return nil
 }
 
 // IsNoTeam reports whether a parsed team file describes Fleet's special
@@ -432,6 +461,7 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 
 	team := &ParsedTeam{
 		Name:       raw.Name,
+		Settings:   decodeSettingsNode(raw.Settings, raw.TeamSettings),
 		SourceFile: path,
 	}
 

@@ -1,7 +1,16 @@
 name: Workstations
-team_settings:
+settings:
   secrets:
     - secret: "$ENROLL_SECRET_WORKSTATIONS"
+  host_expiry_settings:
+    host_expiry_enabled: true
+    host_expiry_window: 30
+  webhook_settings:
+    failing_policies_webhook:
+      enable_failing_policies_webhook: true
+      host_batch_size: 100
+  features:
+    enable_software_inventory: true
 agent_options:
   config:
     options:
