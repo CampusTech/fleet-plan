@@ -89,6 +89,8 @@ Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also pa
 
 Compares `FleetState` (API) vs `ParsedRepo` (YAML). Produces `[]DiffResult` per team + a `(global)` result when `default.yml` is present.
 
+Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched separately (`team_id=0`) and diffed like any other team for policies, profiles, and scripts. Software is reported as skipped there: Fleet exposes configured software only through the teams list. When the bucket was not fetched, the diff falls back to summarizing what the repo configures for it.
+
 | Resource | Match key | Diff fields |
 |----------|-----------|-------------|
 | Config sections (global) | dot-path key | old/new value (skips `$VAR` placeholders) |
