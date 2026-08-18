@@ -14,14 +14,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/TsekNet/fleet-plan/internal/api"
-	"github.com/TsekNet/fleet-plan/internal/config"
-	"github.com/TsekNet/fleet-plan/internal/diff"
-	"github.com/TsekNet/fleet-plan/internal/git"
-	"github.com/TsekNet/fleet-plan/internal/merge"
-	"github.com/TsekNet/fleet-plan/internal/output"
-	"github.com/TsekNet/fleet-plan/internal/parser"
-	"github.com/TsekNet/fleet-plan/internal/teamdir"
+	"github.com/CampusTech/fleet-plan/internal/api"
+	"github.com/CampusTech/fleet-plan/internal/config"
+	"github.com/CampusTech/fleet-plan/internal/diff"
+	"github.com/CampusTech/fleet-plan/internal/git"
+	"github.com/CampusTech/fleet-plan/internal/merge"
+	"github.com/CampusTech/fleet-plan/internal/output"
+	"github.com/CampusTech/fleet-plan/internal/parser"
+	"github.com/CampusTech/fleet-plan/internal/teamdir"
 )
 
 // Set via -ldflags at build time.

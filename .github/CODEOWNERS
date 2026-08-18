@@ -1,0 +1,9 @@
+# Default owners for everything in this repo.
+* @CampusTech/it
+
+# Security-sensitive surfaces: the API client is GET-only and HTTPS-enforced,
+# and internal/config resolves auth tokens. Changes there need IT review.
+/internal/api/    @CampusTech/it
+/internal/config/ @CampusTech/it
+/.github/         @CampusTech/it
+/SECURITY.md      @CampusTech/it

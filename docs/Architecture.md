@@ -118,7 +118,7 @@ Whitespace is normalized before comparison to avoid false positives from YAML vs
 
 ## Demo GIF
 
-`assets/vhs-demo.go` renders representative output from testdata for the README demo GIF. See [assets/README.md](https://github.com/TsekNet/fleet-plan/blob/main/assets/README.md) for prerequisites, setup, and regeneration steps.
+`assets/vhs-demo.go` renders representative output from testdata for the README demo GIF. See [assets/README.md](https://github.com/CampusTech/fleet-plan/blob/main/assets/README.md) for prerequisites, setup, and regeneration steps.
 
 ---
 

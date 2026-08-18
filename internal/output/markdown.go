@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/TsekNet/fleet-plan/internal/diff"
+	"github.com/CampusTech/fleet-plan/internal/diff"
 )
 
 // MarkdownOptions controls optional CI-oriented additions to markdown output.

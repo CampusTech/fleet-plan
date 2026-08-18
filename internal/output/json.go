@@ -3,7 +3,7 @@ package output
 import (
 	"encoding/json"
 
-	"github.com/TsekNet/fleet-plan/internal/diff"
+	"github.com/CampusTech/fleet-plan/internal/diff"
 )
 
 // JSONDiffOutput is the structured JSON output for AI agents and CI.

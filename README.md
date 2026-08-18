@@ -3,9 +3,9 @@
   <h1>fleet-plan</h1>
   <p><strong><code>terraform plan</code>, but for <a href="https://fleetdm.com/">Fleet</a>.</strong></p>
 
-  [![codecov](https://codecov.io/gh/TsekNet/fleet-plan/branch/main/graph/badge.svg)](https://codecov.io/gh/TsekNet/fleet-plan)
+  [![codecov](https://codecov.io/gh/CampusTech/fleet-plan/branch/main/graph/badge.svg)](https://codecov.io/gh/CampusTech/fleet-plan)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-  [![GitHub Release](https://img.shields.io/github/v/release/TsekNet/fleet-plan)](https://github.com/TsekNet/fleet-plan/releases)
+  [![GitHub Release](https://img.shields.io/github/v/release/CampusTech/fleet-plan)](https://github.com/CampusTech/fleet-plan/releases)
 </div>
 
 ---
@@ -16,7 +16,7 @@ Run in CI **before** `fleetctl gitops --dry-run`. fleet-plan shows *what* change
 
 ![fleet-plan terminal diff](assets/demo.gif)
 
-> **Disclaimer:** This was created as a fun side project, not affiliated with any company.
+> Maintained by the [CampusTech](https://github.com/CampusTech) IT & Infrastructure team.
 
 ## Features
 
@@ -33,7 +33,7 @@ Run in CI **before** `fleetctl gitops --dry-run`. fleet-plan shows *what* change
 
 ## Install
 
-Grab a binary from [Releases](https://github.com/TsekNet/fleet-plan/releases).
+Grab a binary from [Releases](https://github.com/CampusTech/fleet-plan/releases).
 
 ## Quick start
 
@@ -154,10 +154,17 @@ When `--git` is active, fleet-plan:
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md). To report a security issue, see [SECURITY.md](SECURITY.md).
+
 ```bash
-git clone https://github.com/TsekNet/fleet-plan.git && cd fleet-plan
+git clone https://github.com/CampusTech/fleet-plan.git && cd fleet-plan
 go test -race ./...
 ```
+
+## Acknowledgements
+
+fleet-plan was created by [TsekNet](https://github.com/TsekNet), who wrote the original
+implementation and transferred the project to CampusTech. Thank you.
 
 ## License
 

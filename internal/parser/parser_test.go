@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TsekNet/fleet-plan/internal/testutil"
+	"github.com/CampusTech/fleet-plan/internal/testutil"
 )
 
 // TestParseTestdataRepo is the primary integration test: parse the shared

@@ -16,10 +16,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/TsekNet/fleet-plan/internal/api"
-	"github.com/TsekNet/fleet-plan/internal/diff"
-	"github.com/TsekNet/fleet-plan/internal/output"
-	"github.com/TsekNet/fleet-plan/internal/parser"
+	"github.com/CampusTech/fleet-plan/internal/api"
+	"github.com/CampusTech/fleet-plan/internal/diff"
+	"github.com/CampusTech/fleet-plan/internal/output"
+	"github.com/CampusTech/fleet-plan/internal/parser"
 )
 
 func testdataRoot() string {
