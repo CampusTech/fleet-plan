@@ -71,7 +71,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, dest an
 	if err != nil {
 		return fmt.Errorf("request to %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -128,17 +128,17 @@ type FleetState struct {
 // Policies/queries/profiles are fetched via separate endpoints.
 // Managed software definitions come directly from /teams[].software.
 type Team struct {
-	ID                    uint         `json:"id"`
-	Name                  string       `json:"name"`
-	Software              TeamSoftware `json:"software"`
-	Policies              []Policy
-	Queries               []Query
-	Profiles              []Profile // populated by GetProfiles
-	Scripts               []Script  `json:"-"` // populated by GetScripts
-	SoftwareTitles        []SoftwareTitle
-	SoftwareUnavailable   bool // true when GetSoftware returned 403/404 (token lacks permission)
-	ProfilesUnavailable   bool // true when GetProfiles returned 403/404 (token lacks permission)
-	ScriptsUnavailable    bool // true when GetScripts returned 403/404 (token lacks permission)
+	ID                  uint         `json:"id"`
+	Name                string       `json:"name"`
+	Software            TeamSoftware `json:"software"`
+	Policies            []Policy
+	Queries             []Query
+	Profiles            []Profile // populated by GetProfiles
+	Scripts             []Script  `json:"-"` // populated by GetScripts
+	SoftwareTitles      []SoftwareTitle
+	SoftwareUnavailable bool // true when GetSoftware returned 403/404 (token lacks permission)
+	ProfilesUnavailable bool // true when GetProfiles returned 403/404 (token lacks permission)
+	ScriptsUnavailable  bool // true when GetScripts returned 403/404 (token lacks permission)
 }
 
 // TeamSoftware mirrors /api/v1/fleet/teams[].software for managed software
@@ -149,6 +149,7 @@ type TeamSoftware struct {
 	AppStoreApps    []TeamAppStoreApp     `json:"app_store_apps"`
 }
 
+// TeamSoftwarePackage is an installer package assigned to a team.
 type TeamSoftwarePackage struct {
 	URL                string   `json:"url"`
 	HashSHA256         string   `json:"hash_sha256"`
@@ -157,6 +158,7 @@ type TeamSoftwarePackage struct {
 	ReferencedYAMLPath string   `json:"referenced_yaml_path"`
 }
 
+// TeamFleetApp is a Fleet-maintained app assigned to a team.
 type TeamFleetApp struct {
 	Slug              string   `json:"slug"`
 	SelfService       bool     `json:"self_service"`
@@ -169,6 +171,7 @@ type TeamFleetApp struct {
 	PostInstallScript string   `json:"-"`
 }
 
+// TeamAppStoreApp is a VPP App Store app assigned to a team.
 type TeamAppStoreApp struct {
 	AppStoreID  string   `json:"app_store_id"`
 	SelfService bool     `json:"self_service"`
@@ -240,18 +243,18 @@ type SoftwareTitlePackageMeta struct {
 type SoftwareTitleDetail struct {
 	ID              uint                        `json:"id"`
 	Name            string                      `json:"name"`
-	SoftwarePackage *SoftwareTitleDetailPackage  `json:"software_package"`
+	SoftwarePackage *SoftwareTitleDetailPackage `json:"software_package"`
 }
 
 // SoftwareTitleDetailPackage contains the full package metadata including scripts.
 type SoftwareTitleDetailPackage struct {
-	InstallScript     string `json:"install_script"`
-	UninstallScript   string `json:"uninstall_script"`
-	PreInstallQuery   string `json:"pre_install_query"`
-	PostInstallScript string `json:"post_install_script"`
-	SelfService       bool   `json:"self_service"`
-	Platform          string `json:"platform"`
-	FleetMaintainedAppID *uint `json:"fleet_maintained_app_id"`
+	InstallScript        string `json:"install_script"`
+	UninstallScript      string `json:"uninstall_script"`
+	PreInstallQuery      string `json:"pre_install_query"`
+	PostInstallScript    string `json:"post_install_script"`
+	SelfService          bool   `json:"self_service"`
+	Platform             string `json:"platform"`
+	FleetMaintainedAppID *uint  `json:"fleet_maintained_app_id"`
 }
 
 // Label represents a Fleet label.
@@ -488,7 +491,9 @@ func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp)
 			return nil
 		})
 	}
-	g.Wait()
+	// Enrichment is best-effort: a failed detail fetch leaves that entry
+	// unenriched rather than failing the whole diff.
+	_ = g.Wait()
 }
 
 // GetFleetMaintainedApps fetches Fleet's maintained-app catalog.
@@ -618,7 +623,9 @@ func (c *Client) EnrichScriptContents(ctx context.Context, scripts []Script) {
 			return nil
 		})
 	}
-	g.Wait()
+	// Enrichment is best-effort: a failed detail fetch leaves that entry
+	// unenriched rather than failing the whole diff.
+	_ = g.Wait()
 }
 
 // getScriptContent downloads script content via GET /api/v1/fleet/scripts/:id?alt=media.
@@ -634,7 +641,7 @@ func (c *Client) getScriptContent(ctx context.Context, scriptID uint) (string, e
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP %d fetching script %d", resp.StatusCode, scriptID)

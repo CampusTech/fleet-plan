@@ -32,7 +32,7 @@ type ResolvedAuth struct {
 type configFile struct {
 	URL            string                       `json:"url"`
 	Token          string                       `json:"token"`
-	Contexts       map[string]configFileContext  `json:"contexts"`
+	Contexts       map[string]configFileContext `json:"contexts"`
 	DefaultContext string                       `json:"default_context"`
 }
 
@@ -100,7 +100,7 @@ func ResolveAuth(flagURL, flagToken string, repoRoot ...string) (*ResolvedAuth, 
 	}
 
 	if url == "" {
-		return nil, fmt.Errorf("Fleet server URL required (--url or $%s)", EnvURL)
+		return nil, fmt.Errorf("missing Fleet server URL (--url or $%s)", EnvURL)
 	}
 	if token == "" {
 		return nil, fmt.Errorf("API token required (--token or $%s)", EnvToken)

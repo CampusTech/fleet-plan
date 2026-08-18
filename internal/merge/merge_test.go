@@ -31,8 +31,8 @@ func TestMergeFiles(t *testing.T) {
 			want:    map[string]any{"key": "overlay_value"},
 		},
 		{
-			name: "deep merge: nested maps",
-			base: "parent:\n  child_a: 1\n  child_b: 2\n",
+			name:    "deep merge: nested maps",
+			base:    "parent:\n  child_a: 1\n  child_b: 2\n",
 			overlay: "parent:\n  child_b: 99\n  child_c: 3\n",
 			want: map[string]any{
 				"parent": map[string]any{

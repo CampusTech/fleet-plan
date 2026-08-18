@@ -40,7 +40,8 @@ func safePath(root, resolved string) error {
 	return nil
 }
 
-// Valid platform identifiers (from server/fleet/policies.go and queries.go).
+// ValidPlatforms lists the platform identifiers Fleet accepts
+// (from server/fleet/policies.go and queries.go).
 var ValidPlatforms = map[string]bool{
 	"darwin":  true,
 	"windows": true,
@@ -48,14 +49,16 @@ var ValidPlatforms = map[string]bool{
 	"chrome":  true,
 }
 
-// Valid logging types (from server/fleet/queries.go).
+// ValidLogging lists the query logging types Fleet accepts
+// (from server/fleet/queries.go).
 var ValidLogging = map[string]bool{
 	"snapshot":                     true,
 	"differential":                 true,
 	"differential_ignore_removals": true,
 }
 
-// Valid top-level YAML keys (from pkg/spec/gitops.go).
+// ValidTopLevelKeys lists the top-level YAML keys fleetctl gitops accepts
+// (from pkg/spec/gitops.go).
 var ValidTopLevelKeys = map[string]bool{
 	"name":          true,
 	"team_settings": true,
@@ -75,7 +78,8 @@ var ValidTopLevelKeys = map[string]bool{
 	"reports":  true,
 }
 
-// Valid label membership types (from server/fleet/labels.go).
+// ValidLabelMembershipTypes lists the label membership types Fleet accepts
+// (from server/fleet/labels.go).
 var ValidLabelMembershipTypes = map[string]bool{
 	"dynamic":     true,
 	"manual":      true,

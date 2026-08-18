@@ -18,6 +18,8 @@ import (
 // Platform identifies the CI provider.
 type Platform int
 
+// Recognized CI providers. PlatformUnknown means fleet-plan is not running in
+// a merge request or pull request context.
 const (
 	PlatformUnknown Platform = iota
 	PlatformGitLab
@@ -49,10 +51,10 @@ type Env struct {
 }
 
 var (
-	validNumeric  = regexp.MustCompile(`^[0-9]+$`)
-	validGHRepo   = regexp.MustCompile(`^[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+$`)
-	validSHA      = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
-	validBranch   = regexp.MustCompile(`^[a-zA-Z0-9/_.\-]+$`)
+	validNumeric = regexp.MustCompile(`^[0-9]+$`)
+	validGHRepo  = regexp.MustCompile(`^[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+$`)
+	validSHA     = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+	validBranch  = regexp.MustCompile(`^[a-zA-Z0-9/_.\-]+$`)
 )
 
 // maxResponseBody is the upper bound on API response size (10 MiB).
@@ -390,7 +392,7 @@ func doRequest(method, reqURL string, body io.Reader, headers map[string]string)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {

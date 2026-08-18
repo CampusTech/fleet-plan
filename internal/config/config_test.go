@@ -113,8 +113,8 @@ func TestResolveAuthConfigFile(t *testing.T) {
 			wantToken: "filetoken",
 		},
 		{
-			name: "contexts format with default_context",
-			json: `{"contexts":{"dev":{"url":"https://dev.example.com","token":"devtoken"},"prod":{"url":"https://prod.example.com","token":"prodtoken"}},"default_context":"dev"}`,
+			name:      "contexts format with default_context",
+			json:      `{"contexts":{"dev":{"url":"https://dev.example.com","token":"devtoken"},"prod":{"url":"https://prod.example.com","token":"prodtoken"}},"default_context":"dev"}`,
 			wantURL:   "https://dev.example.com",
 			wantToken: "devtoken",
 		},

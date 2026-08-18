@@ -234,7 +234,7 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			},
 		},
 		{
-			name:    "ci-heading as heading",
+			name: "ci-heading as heading",
 			results: []diff.DiffResult{{
 				Team:     "T",
 				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
@@ -243,13 +243,34 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantAll: []string{"## Planned changes for fleet.example.com", "**1 added**"},
 		},
 		{
-			name:    "ci-marker appended",
+			name: "ci-marker appended",
 			results: []diff.DiffResult{{
 				Team:     "T",
 				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
 			}},
 			opts:    MarkdownOptions{Marker: "fleet-plan-marker"},
 			wantAll: []string{"<!-- fleet-plan-marker -->"},
+		},
+		{
+			name: "ci job url link",
+			results: []diff.DiffResult{{
+				Team:     "T",
+				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
+			}},
+			opts: MarkdownOptions{
+				Marker: "fleet-plan-marker",
+				JobURL: "https://gitlab.example.com/group/repo/-/jobs/99",
+			},
+			wantAll: []string{
+				"[View pipeline job](https://gitlab.example.com/group/repo/-/jobs/99)",
+				"<!-- fleet-plan-marker -->",
+			},
+		},
+		{
+			name:    "ci job url link on no changes",
+			results: nil,
+			opts:    MarkdownOptions{JobURL: "https://gitlab.example.com/group/repo/-/jobs/99"},
+			wantAll: []string{"No changes detected", "[View pipeline job](https://gitlab.example.com/group/repo/-/jobs/99)"},
 		},
 		{
 			name:    "ci-marker on no changes",
@@ -385,7 +406,7 @@ func TestMdDiffContext(t *testing.T) {
 	}{
 		{
 			name: "short values unchanged",
-			old: "3600", new: "7200", maxLen: 60,
+			old:  "3600", new: "7200", maxLen: 60,
 			wantOldSub: "3600", wantNewSub: "7200",
 		},
 		{

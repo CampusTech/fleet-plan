@@ -583,11 +583,11 @@ func subtractConfigChanges(total, baseline []ConfigChange) []ConfigChange {
 	type configKey struct{ Section, Key, Old, New string }
 	baseSet := make(map[configKey]bool, len(baseline))
 	for _, b := range baseline {
-		baseSet[configKey{b.Section, b.Key, b.Old, b.New}] = true
+		baseSet[configKey(b)] = true
 	}
 	var out []ConfigChange
 	for _, c := range total {
-		if !baseSet[configKey{c.Section, c.Key, c.Old, c.New}] {
+		if !baseSet[configKey(c)] {
 			out = append(out, c)
 		}
 	}

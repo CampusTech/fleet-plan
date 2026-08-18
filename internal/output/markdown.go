@@ -31,10 +31,10 @@ func HasChanges(results []diff.DiffResult) bool {
 
 func writeMarker(sb *strings.Builder, opts MarkdownOptions) {
 	if opts.JobURL != "" {
-		sb.WriteString(fmt.Sprintf("[View pipeline job](%s)\n", opts.JobURL))
+		fmt.Fprintf(sb, "[View pipeline job](%s)\n", opts.JobURL)
 	}
 	if opts.Marker != "" {
-		sb.WriteString(fmt.Sprintf("\n<!-- %s -->\n", opts.Marker))
+		fmt.Fprintf(sb, "\n<!-- %s -->\n", opts.Marker)
 	}
 }
 
@@ -101,7 +101,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 			{"Query", result.Queries},
 			{"Software", result.Software},
 			{"Profile", result.Profiles},
-		{"Script", result.Scripts},
+			{"Script", result.Scripts},
 		}
 
 		for _, rt := range types {
@@ -142,8 +142,8 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 	sb.WriteString("| Change | Team | Type | Resource | Details |\n")
 	sb.WriteString("|---|---|---|---|---|\n")
 	for _, r := range rows {
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | **%s** | %s |\n",
-			r.change, r.team, r.kind, mdEscapeTableCell(r.resource), r.details))
+		fmt.Fprintf(&sb, "| %s | %s | %s | **%s** | %s |\n",
+			r.change, r.team, r.kind, mdEscapeTableCell(r.resource), r.details)
 	}
 	for _, e := range errRows {
 		sb.WriteString(e + "\n")
@@ -161,7 +161,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 	sb.WriteString("\n")
 
 	if warning := buildPermissionWarning(results); warning != "" {
-		sb.WriteString(fmt.Sprintf("\n⚠️ %s\n", warning))
+		fmt.Fprintf(&sb, "\n⚠️ %s\n", warning)
 	}
 
 	sb.WriteString("\n> **NOTE:** Unexpected changes? Rebase, or confirm that changes have been deployed to Fleet.\n")
@@ -366,9 +366,9 @@ func renderLabelsTable(results []diff.DiffResult) string {
 
 	for _, l := range validLabels {
 		if anyNonZero {
-			sb.WriteString(fmt.Sprintf("| `%s` | %s |\n", l.Name, formatHostCount(l.HostCount)))
+			fmt.Fprintf(&sb, "| `%s` | %s |\n", l.Name, formatHostCount(l.HostCount))
 		} else {
-			sb.WriteString(fmt.Sprintf("| `%s` |\n", l.Name))
+			fmt.Fprintf(&sb, "| `%s` |\n", l.Name)
 		}
 	}
 
@@ -376,9 +376,9 @@ func renderLabelsTable(results []diff.DiffResult) string {
 	for _, name := range missingNames {
 		l := missingSeen[name]
 		if anyNonZero {
-			sb.WriteString(fmt.Sprintf("| `%s` **NOT FOUND** (ref: %s) | — |\n", l.Name, l.ReferencedBy))
+			fmt.Fprintf(&sb, "| `%s` **NOT FOUND** (ref: %s) | — |\n", l.Name, l.ReferencedBy)
 		} else {
-			sb.WriteString(fmt.Sprintf("| `%s` **NOT FOUND** (ref: %s) |\n", l.Name, l.ReferencedBy))
+			fmt.Fprintf(&sb, "| `%s` **NOT FOUND** (ref: %s) |\n", l.Name, l.ReferencedBy)
 		}
 	}
 
