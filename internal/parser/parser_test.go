@@ -1166,6 +1166,20 @@ team_settings:
 			wantNil: true,
 		},
 		{
+			// A scalar where a mapping belongs cannot be decoded; the parser
+			// moves on to the legacy key rather than failing the file.
+			name: "non-mapping settings falls through to team_settings",
+			yaml: `name: T
+settings: "not a mapping"
+team_settings:
+  features:
+    enable_software_inventory: true
+`,
+			want: map[string]any{
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		},
+		{
 			name:    "empty settings block",
 			yaml:    "name: T\nsettings: {}\n",
 			wantNil: true,

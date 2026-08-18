@@ -2389,6 +2389,7 @@ func TestDiffTeamSettings(t *testing.T) {
 			"features": map[string]any{"enable_software_inventory": true},
 			"integrations": map[string]any{
 				"google_calendar": map[string]any{"enable_calendar_events": false},
+				"allow_list":      []any{"a", "b"},
 			},
 		}
 	}
@@ -2457,6 +2458,49 @@ func TestDiffTeamSettings(t *testing.T) {
 					"failing_policies_webhook": map[string]any{
 						"destination_url": "$WEBHOOK_URL",
 					},
+				},
+			},
+		},
+		{
+			// The API does not report a value for this key, so "" cannot be
+			// told apart from "Fleet has no opinion" -- reporting it would be
+			// a guess.
+			name: "key absent from the API section is not reported",
+			proposed: map[string]any{
+				"features": map[string]any{"enable_future_thing": true},
+			},
+		},
+		{
+			// List values are compared as serialized JSON, element order
+			// included -- the same rule the global config diff uses.
+			name: "reordered JSON list is reported as a change",
+			proposed: map[string]any{
+				"integrations": map[string]any{
+					"allow_list": []any{"b", "a"},
+				},
+			},
+			wantChanges: []ConfigChange{
+				{
+					Section: "settings",
+					Key:     "integrations.allow_list",
+					Old:     `["a","b"]`,
+					New:     `["b","a"]`,
+				},
+			},
+		},
+		{
+			name: "differing JSON lists are a change",
+			proposed: map[string]any{
+				"integrations": map[string]any{
+					"allow_list": []any{"a", "c"},
+				},
+			},
+			wantChanges: []ConfigChange{
+				{
+					Section: "settings",
+					Key:     "integrations.allow_list",
+					Old:     `["a","b"]`,
+					New:     `["a","c"]`,
 				},
 			},
 		},
