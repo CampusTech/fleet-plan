@@ -351,18 +351,28 @@ func resolveCIScope(ci git.Env, repo, envFile string, defaultFile *string, expli
 	return scope, false
 }
 
-func main() {
+// run executes the CLI with the given arguments and returns the process exit
+// code: 0 for success, 1 for an error, 2 for --detailed-exitcodes with changes.
+// Split from main() so tests can assert the exit code without os.Exit.
+func run(args []string) int {
 	// NotifyContext so an interrupt cancels the in-flight Fleet fetches and
 	// unwinds through runDiff's defers, which delete the temp merged config
 	// file that --base/--env writes inside the repo.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := buildRootCmd().ExecuteContext(ctx); err != nil {
+	root := buildRootCmd()
+	root.SetArgs(args)
+	if err := root.ExecuteContext(ctx); err != nil {
 		if errors.Is(err, errChangesDetected) {
-			os.Exit(2)
+			return 2
 		}
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+func main() {
+	os.Exit(run(os.Args[1:]))
 }

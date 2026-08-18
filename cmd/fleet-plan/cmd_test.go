@@ -684,3 +684,74 @@ func TestResolveCIScopeFromChangedFiles(t *testing.T) {
 		})
 	}
 }
+
+// ---------- exit codes ----------
+
+func TestRunExitCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		args func(t *testing.T, fleetURL string) []string
+		want int
+	}{
+		{
+			name: "version succeeds",
+			args: func(_ *testing.T, _ string) []string { return []string{"version"} },
+			want: 0,
+		},
+		{
+			name: "no changes to report",
+			args: func(t *testing.T, _ string) []string {
+				// An empty teams dir parses cleanly with nothing to diff.
+				root := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(root, "teams"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return []string{"--repo", root, "--no-color"}
+			},
+			want: 1, // "no teams found" is a usage error, not a clean run
+		},
+		{
+			name: "detailed exit code reports changes as 2",
+			args: func(_ *testing.T, _ string) []string {
+				return []string{
+					"--repo", filepath.Join("..", "..", "testdata"),
+					"--detailed-exitcodes", "--no-color",
+				}
+			},
+			want: 2,
+		},
+		{
+			name: "changes without --detailed-exitcodes still exits 0",
+			args: func(_ *testing.T, _ string) []string {
+				return []string{"--repo", filepath.Join("..", "..", "testdata"), "--no-color"}
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := stubFleetAPI(t)
+			t.Setenv("FLEET_PLAN_INSECURE", "1")
+			t.Setenv("FLEET_URL", srv.URL)
+			t.Setenv("FLEET_TOKEN", "test-token")
+			t.Setenv("HOME", t.TempDir())
+
+			// Discard stdout rather than piping it: the full testdata diff is
+			// larger than a pipe buffer, and nothing here reads the other end.
+			old := os.Stdout
+			devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.Stdout = devnull
+			got := run(tt.args(t, srv.URL))
+			_ = devnull.Close()
+			os.Stdout = old
+
+			if got != tt.want {
+				t.Errorf("exit code: got %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

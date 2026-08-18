@@ -51,7 +51,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
+          # Latest patch release, not just the go.mod minimum: govulncheck
+          # reports standard-library vulnerabilities against the toolchain
+          # actually in use, and those are fixed by patch releases.
           go-version-file: go.mod
+          check-latest: true
 
       - name: govulncheck
         run: |
