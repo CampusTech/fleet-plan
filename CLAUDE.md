@@ -15,7 +15,7 @@ go vet ./...
 golangci-lint run
 ```
 
-Coverage target: >= 75% per package, enforced by `codecov.yml`. Current: 83.8%
+Coverage target: >= 75% per package, enforced in CI by `scripts/coverage-floor.sh`. Current: 84.7%
 overall, every package at or above 78.9%. All packages have `_test.go`. Tests use `testdata/` as a shared fleet-gitops fixture. Table-driven throughout.
 
 ## Key packages
