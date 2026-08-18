@@ -5,11 +5,13 @@ package parser
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/TsekNet/fleet-plan/internal/teamdir"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,6 +66,13 @@ var ValidTopLevelKeys = map[string]bool{
 	"queries":       true,
 	"software":      true,
 	"labels":        true,
+	// Newer Fleet schema additions accepted by `fleetctl gitops`.
+	// `reports:` is the renamed `queries:` (fleetdm/fleet#40726); we parse
+	// it fully via rawTeamFile.Reports. `settings:` is currently accepted
+	// as opaque — field-level diffing isn't implemented but the absence of
+	// an error keeps the rest of the diff trustworthy.
+	"settings": true,
+	"reports":  true,
 }
 
 // Valid label membership types (from server/fleet/labels.go).
@@ -207,15 +216,20 @@ func (e ParseError) Error() string {
 // ---------- Team YAML raw types (for initial parsing) ----------
 
 type rawTeamFile struct {
-	Name         string           `yaml:"name"`
-	TeamSettings yaml.Node        `yaml:"team_settings"`
-	OrgSettings  yaml.Node        `yaml:"org_settings"`
-	AgentOptions yaml.Node        `yaml:"agent_options"`
-	Controls     rawControls      `yaml:"controls"`
-	Policies     []rawPathRef     `yaml:"policies"`
-	Queries      []rawPathRef     `yaml:"queries"`
-	Software     rawSoftwareBlock `yaml:"software"`
-	Labels       []rawPathRef     `yaml:"labels"`
+	Name         string       `yaml:"name"`
+	TeamSettings yaml.Node    `yaml:"team_settings"`
+	OrgSettings  yaml.Node    `yaml:"org_settings"`
+	AgentOptions yaml.Node    `yaml:"agent_options"`
+	Controls     rawControls  `yaml:"controls"`
+	Policies     []rawPathRef `yaml:"policies"`
+	Queries      []rawPathRef `yaml:"queries"`
+	// Reports is the renamed-in-fleetdm/fleet#40726 spelling of queries.
+	// `fleetctl gitops` accepts both; we treat them as equivalent here so
+	// repos that use the modern `reports:` keyword don't show every live
+	// Fleet query as REMOVED on the diff.
+	Reports  []rawPathRef     `yaml:"reports"`
+	Software rawSoftwareBlock `yaml:"software"`
+	Labels   []rawPathRef     `yaml:"labels"`
 }
 
 type rawPathRef struct {
@@ -229,13 +243,13 @@ type rawSoftwareBlock struct {
 }
 
 type rawFleetApp struct {
-	Slug              string       `yaml:"slug"`
-	SelfService       bool         `yaml:"self_service"`
-	Categories        []string     `yaml:"categories"`
-	InstallScript     *rawPathRef  `yaml:"install_script"`
-	UninstallScript   *rawPathRef  `yaml:"uninstall_script"`
-	PreInstallQuery   *rawPathRef  `yaml:"pre_install_query"`
-	PostInstallScript *rawPathRef  `yaml:"post_install_script"`
+	Slug              string      `yaml:"slug"`
+	SelfService       bool        `yaml:"self_service"`
+	Categories        []string    `yaml:"categories"`
+	InstallScript     *rawPathRef `yaml:"install_script"`
+	UninstallScript   *rawPathRef `yaml:"uninstall_script"`
+	PreInstallQuery   *rawPathRef `yaml:"pre_install_query"`
+	PostInstallScript *rawPathRef `yaml:"post_install_script"`
 }
 
 type rawSoftwareRef struct {
@@ -257,17 +271,34 @@ type rawSoftwarePackage struct {
 }
 
 type rawControls struct {
-	Scripts         []rawPathRef `yaml:"scripts"`
-	MacOSSettings   struct {
+	Scripts       []rawPathRef `yaml:"scripts"`
+	MacOSSettings struct {
 		CustomSettings []rawProfileRef `yaml:"custom_settings"`
 	} `yaml:"macos_settings"`
 	WindowsSettings struct {
 		CustomSettings []rawProfileRef `yaml:"custom_settings"`
+		// ConfigurationProfiles is the modern key (mirroring
+		// apple_settings.configuration_profiles) that fleetctl gitops accepts
+		// for Windows profiles. Both spellings are valid; profiles defined here
+		// must be parsed or every matching live Fleet profile is reported as
+		// REMOVED.
+		ConfigurationProfiles []rawProfileRef `yaml:"configuration_profiles"`
 	} `yaml:"windows_settings"`
+	// AppleSettings is the modern unified Apple-platform block, replacing
+	// macos_settings.custom_settings. configuration_profiles entries can be
+	// .mobileconfig (macOS/iOS/iPadOS), .json (DDM declarations), or .xml.
+	// The platform is inferred from the file path (e.g. lib/ipados/...) and
+	// from file extension if no path hint is present.
+	AppleSettings struct {
+		ConfigurationProfiles []rawProfileRef `yaml:"configuration_profiles"`
+	} `yaml:"apple_settings"`
 }
 
 type rawProfileRef struct {
-	Path string `yaml:"path"`
+	Path             string   `yaml:"path"`
+	LabelsIncludeAny []string `yaml:"labels_include_any"`
+	LabelsExcludeAny []string `yaml:"labels_exclude_any"`
+	LabelsIncludeAll []string `yaml:"labels_include_all"`
 }
 
 // ---------- Parser ----------
@@ -282,6 +313,27 @@ func MatchesAnyTeam(name string, filters []string) bool {
 	return false
 }
 
+// IsNoTeam reports whether a parsed team file describes Fleet's special
+// "hosts not assigned to any team" bucket rather than a real team.
+//
+// Fleet calls this bucket "No team" in the teams/ layout (teams/no-team.yml)
+// and "Unassigned" in the fleets/ layout (fleets/unassigned.yml) — fleetctl
+// logs its work on that file as "... for unassigned hosts". Either way it
+// always exists, is never created, and is NOT returned by GET /teams, so
+// callers must not treat its absence there as a new team.
+//
+// Matched on the team name and, as a fallback for a file whose name: key was
+// spelled differently, the source file's base name.
+func IsNoTeam(name, sourceFile string) bool {
+	for _, n := range []string{"No team", "Unassigned"} {
+		if strings.EqualFold(name, n) {
+			return true
+		}
+	}
+	base := strings.ToLower(strings.TrimSuffix(filepath.Base(sourceFile), filepath.Ext(sourceFile)))
+	return base == "no-team" || base == "unassigned"
+}
+
 // ParseRepo parses the fleet-gitops repository at the given root directory.
 // If teamFilters is non-empty, only matching teams are parsed.
 // If defaultFile is non-empty, it is used as the path to default.yml (the
@@ -290,17 +342,18 @@ func MatchesAnyTeam(name string, filters []string) bool {
 func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRepo, error) {
 	repo := &ParsedRepo{}
 
-	teamsDir := filepath.Join(root, "teams")
+	teamsDirName := teamdir.Resolve(root)
+	teamsDir := filepath.Join(root, teamsDirName)
 	entries, err := os.ReadDir(teamsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			repo.Errors = append(repo.Errors, ParseError{
 				File:    teamsDir,
-				Message: "teams/ directory not found. Are you in a fleet-gitops repo?",
+				Message: fmt.Sprintf("%s/ directory not found. Are you in a fleet-gitops repo?", teamsDirName),
 			})
 			return repo, nil
 		}
-		return nil, fmt.Errorf("reading teams directory: %w", err)
+		return nil, fmt.Errorf("reading %s directory: %w", teamsDirName, err)
 	}
 
 	for _, entry := range entries {
@@ -342,7 +395,8 @@ func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRe
 	return repo, nil
 }
 
-// parseTeamFile parses a single teams/*.yml file and resolves all path: refs.
+// parseTeamFile parses a single team YAML file (under fleets/ or teams/) and
+// resolves all path: refs.
 func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 	var errs []ParseError
 
@@ -387,8 +441,10 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 		team.Policies = append(team.Policies, policies...)
 	}
 
-	// Resolve queries
-	for _, ref := range raw.Queries {
+	// Resolve queries. Both `queries:` and `reports:` are accepted — Fleet
+	// renamed the key in fleetdm/fleet#40726 but kept the old spelling
+	// working, so repos may use either or both during transition.
+	for _, ref := range append(append([]rawPathRef(nil), raw.Queries...), raw.Reports...) {
 		queries, parseErrs := resolveQueryRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		team.Queries = append(team.Queries, queries...)
@@ -398,16 +454,42 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 	for _, ref := range raw.Software.Packages {
 		pkgs, parseErrs := resolveSoftwareRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
-		for i := range pkgs {
-			canonicalRef := ""
-			if root != "" && pkgs[i].SourceFile != "" {
+
+		// Every package resolved from one ref shares the same source file, so
+		// the canonical ref is a property of the ref, not the individual
+		// package. Compute it once from the resolved file path.
+		canonicalRef := ""
+		if root != "" {
+			for i := range pkgs {
+				if pkgs[i].SourceFile == "" {
+					continue
+				}
 				if rel, err := filepath.Rel(root, pkgs[i].SourceFile); err == nil {
 					canonicalRef = NormalizeSoftwarePath(rel)
+					break
 				}
 			}
-			if canonicalRef == "" {
-				canonicalRef = NormalizeSoftwarePath(ref.Path)
+		}
+		if canonicalRef == "" {
+			canonicalRef = NormalizeSoftwarePath(ref.Path)
+		}
+
+		// Guard against the same package file being referenced twice in the
+		// same team YAML. A single file may legitimately define multiple
+		// packages (list form), so dedup at the ref level rather than per
+		// resolved package.
+		if canonicalRef != "" {
+			if seenSoftwareRefs[canonicalRef] {
+				errs = append(errs, ParseError{
+					File:    path,
+					Message: fmt.Sprintf("duplicate software package reference: %q", canonicalRef),
+				})
+				continue
 			}
+			seenSoftwareRefs[canonicalRef] = true
+		}
+
+		for i := range pkgs {
 			pkgs[i].RefPath = canonicalRef
 			// Team-level package entries can override package file settings.
 			// Apply explicit self_service override when present.
@@ -416,17 +498,6 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			}
 			if ref.Categories != nil {
 				pkgs[i].Categories = ref.Categories
-			}
-			// Guard against duplicate package refs in the same team YAML.
-			if canonicalRef != "" {
-				if seenSoftwareRefs[canonicalRef] {
-					errs = append(errs, ParseError{
-						File:    path,
-						Message: fmt.Sprintf("duplicate software package reference: %q", canonicalRef),
-					})
-					continue
-				}
-				seenSoftwareRefs[canonicalRef] = true
 			}
 			team.Software.Packages = append(team.Software.Packages, pkgs[i])
 		}
@@ -482,7 +553,13 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			SourceFile: path,
 		})
 	}
-	for _, ref := range raw.Controls.WindowsSettings.CustomSettings {
+	// Windows profiles may be listed under custom_settings (older spelling) or
+	// configuration_profiles (modern spelling, mirroring apple_settings).
+	// fleetctl gitops accepts both, so parse both.
+	for _, ref := range append(
+		append([]rawProfileRef(nil), raw.Controls.WindowsSettings.CustomSettings...),
+		raw.Controls.WindowsSettings.ConfigurationProfiles...,
+	) {
 		resolved := filepath.Join(dir, ref.Path)
 		if root != "" {
 			if err := safePath(root, resolved); err != nil {
@@ -502,7 +579,51 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 		})
 	}
 
+	// apple_settings.configuration_profiles is the unified modern block that
+	// supersedes macos_settings.custom_settings. Entries may be .mobileconfig
+	// (macOS/iOS/iPadOS), .json (DDM declarations), or .xml. Diff identity is
+	// by name (PayloadDisplayName or filename for DDM); platform is informational.
+	for _, ref := range raw.Controls.AppleSettings.ConfigurationProfiles {
+		resolved := filepath.Join(dir, ref.Path)
+		if root != "" {
+			if err := safePath(root, resolved); err != nil {
+				errs = append(errs, ParseError{File: path, Message: err.Error()})
+				continue
+			}
+		}
+		name := extractProfileName(resolved)
+		if name == "" {
+			name = profileNameFromFilename(resolved)
+		}
+		team.Profiles = append(team.Profiles, ParsedProfile{
+			Path:       resolved,
+			Name:       name,
+			Platform:   inferApplePlatform(ref.Path),
+			SourceFile: path,
+		})
+	}
+
 	return team, errs
+}
+
+// inferApplePlatform returns a coarse platform string based on the path
+// segment. lib/ipados/* → ipados, lib/ios/* → ios, anything else → darwin
+// (covers lib/macos/, lib/all/, lib/unassigned/, etc.). Fleet's diff identity
+// is the embedded profile name, not platform — this is purely for display.
+func inferApplePlatform(refPath string) string {
+	clean := strings.ToLower(filepath.ToSlash(filepath.Clean(refPath)))
+	// Match ios/ipados as complete path components so a root-level relative
+	// path (e.g. "ios/profile.mobileconfig", with no leading slash) is still
+	// classified correctly rather than falling through to darwin.
+	for _, component := range strings.Split(clean, "/") {
+		switch component {
+		case "ipados":
+			return "ipados"
+		case "ios":
+			return "ios"
+		}
+	}
+	return "darwin"
 }
 
 // readYAMLRef resolves a path: reference, validates it stays within the repo
@@ -583,35 +704,49 @@ func resolveSoftwareRef(root, baseDir, refPath, parentFile string) ([]ParsedSoft
 		return nil, errs
 	}
 
-	var raw rawSoftwarePackage
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	// A package file may be a single object (url: ...) or a list of them
+	// (- url: ...). fleetctl gitops accepts both, so fall back to the list
+	// form when object unmarshaling fails (mirrors resolvePolicyRef /
+	// resolveQueryRef). Without this the list form is dropped and every
+	// package it holds is falsely reported as REMOVED. A multi-item list
+	// must yield one package per entry, not just the first.
+	var raws []rawSoftwarePackage
+	var single rawSoftwarePackage
+	if err := yaml.Unmarshal(data, &single); err == nil {
+		raws = []rawSoftwarePackage{single}
+	} else if err2 := yaml.Unmarshal(data, &raws); err2 != nil {
 		return nil, []ParseError{{File: resolved, Message: fmt.Sprintf("YAML parse error: %s", err)}}
 	}
 
-	pkg := ParsedSoftwarePackage{
-		URL:         raw.URL,
-		HashSHA256:  raw.HashSHA256,
-		SelfService: raw.SelfService,
-		Categories:  raw.Categories,
-		SourceFile:  resolved,
-	}
-
 	pkgDir := filepath.Dir(resolved)
-	for _, ref := range []*rawPathRef{raw.InstallScript, raw.UninstallScript, raw.PreInstallQuery, raw.PostInstallScript} {
-		if ref == nil || ref.Path == "" {
-			continue
+	pkgs := make([]ParsedSoftwarePackage, 0, len(raws))
+	for _, raw := range raws {
+		pkg := ParsedSoftwarePackage{
+			URL:         raw.URL,
+			HashSHA256:  raw.HashSHA256,
+			SelfService: raw.SelfService,
+			Categories:  raw.Categories,
+			SourceFile:  resolved,
 		}
-		scriptPath := filepath.Join(pkgDir, ref.Path)
-		if root != "" {
-			if err := safePath(root, scriptPath); err != nil {
-				errs = append(errs, ParseError{File: resolved, Message: err.Error()})
+
+		for _, ref := range []*rawPathRef{raw.InstallScript, raw.UninstallScript, raw.PreInstallQuery, raw.PostInstallScript} {
+			if ref == nil || ref.Path == "" {
 				continue
 			}
+			scriptPath := filepath.Join(pkgDir, ref.Path)
+			if root != "" {
+				if err := safePath(root, scriptPath); err != nil {
+					errs = append(errs, ParseError{File: resolved, Message: err.Error()})
+					continue
+				}
+			}
+			pkg.SourceFiles = append(pkg.SourceFiles, scriptPath)
 		}
-		pkg.SourceFiles = append(pkg.SourceFiles, scriptPath)
+
+		pkgs = append(pkgs, pkg)
 	}
 
-	return []ParsedSoftwarePackage{pkg}, errs
+	return pkgs, errs
 }
 
 // resolveFleetApp resolves path: references in a fleet-maintained app entry,
@@ -672,7 +807,7 @@ func extractQueryFromYAML(data []byte) string {
 	return strings.TrimSpace(string(data))
 }
 
-// NormalizeSoftwarePath canonicalizes teams/*.yml software package paths so
+// NormalizeSoftwarePath canonicalizes team YAML software package paths so
 // they match Fleet API's software.packages[].referenced_yaml_path format.
 // Example: "../software/mac/slack/slack.yml" -> "software/mac/slack/slack.yml"
 func NormalizeSoftwarePath(p string) string {
@@ -710,11 +845,13 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 		return nil, []ParseError{{File: path, Message: fmt.Sprintf("YAML parse error: %s", err)}}
 	}
 
-	// Parse structured fields (labels, policies, queries path refs)
+	// Parse structured fields (labels, policies, queries path refs).
+	// `reports:` is the renamed-in-#40726 alias for `queries:`.
 	var rawStruct struct {
 		Labels   []rawPathRef `yaml:"labels"`
 		Policies []rawPathRef `yaml:"policies"`
 		Queries  []rawPathRef `yaml:"queries"`
+		Reports  []rawPathRef `yaml:"reports"`
 	}
 	if err := yaml.Unmarshal(data, &rawStruct); err != nil {
 		return nil, []ParseError{{File: path, Message: fmt.Sprintf("YAML parse error: %s", err)}}
@@ -748,8 +885,9 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 		global.Policies = append(global.Policies, policies...)
 	}
 
-	// Resolve global queries
-	for _, ref := range rawStruct.Queries {
+	// Resolve global queries. Accept both `queries:` and the renamed
+	// `reports:` (fleetdm/fleet#40726); see rawTeamFile for context.
+	for _, ref := range append(append([]rawPathRef(nil), rawStruct.Queries...), rawStruct.Reports...) {
 		queries, parseErrs := resolveQueryRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		global.Queries = append(global.Queries, queries...)
@@ -838,35 +976,76 @@ func extractProfileName(filePath string) string {
 // PayloadDisplayName) and a top-level PayloadDisplayName. Fleet uses the
 // top-level one as the profile identity.
 //
-// In standard plist layout, the top-level PayloadDisplayName appears AFTER
-// the PayloadContent array, so it's the last occurrence in the file.
+// The order of PayloadDisplayName relative to PayloadContent is not
+// standardized — Apple Configurator emits it before the array, ProfileCreator
+// after, hand-edited files vary. So we can't rely on first/last position;
+// instead we track <dict> nesting depth and only accept PayloadDisplayName
+// at depth 1 (direct child of the root dict; depth 0 is <plist>).
 func extractMobileconfigName(data []byte) string {
 	s := string(data)
-	needle := "<key>PayloadDisplayName</key>"
-	last := ""
+	const needle = "<key>PayloadDisplayName</key>"
 
-	// Find all occurrences and keep the last one — that's the top-level dict entry.
-	remaining := s
+	depth := 0 // <dict> nesting depth, starting at 0 (outside <plist>'s root <dict>).
+	// dictOpen reports whether a <dict> tag at position i is an opening tag
+	// (not self-closing).
+	scanTags := func(seg string) {
+		i := 0
+		for i < len(seg) {
+			lt := strings.IndexByte(seg[i:], '<')
+			if lt < 0 {
+				return
+			}
+			i += lt
+			if strings.HasPrefix(seg[i:], "<dict>") {
+				depth++
+				i += len("<dict>")
+				continue
+			}
+			if strings.HasPrefix(seg[i:], "<dict/>") {
+				// Self-closing — no children; depth unchanged.
+				i += len("<dict/>")
+				continue
+			}
+			if strings.HasPrefix(seg[i:], "</dict>") {
+				depth--
+				i += len("</dict>")
+				continue
+			}
+			// Skip past this tag.
+			gt := strings.IndexByte(seg[i:], '>')
+			if gt < 0 {
+				return
+			}
+			i += gt + 1
+		}
+	}
+
+	cursor := 0
 	for {
-		idx := strings.Index(remaining, needle)
+		idx := strings.Index(s[cursor:], needle)
 		if idx < 0 {
 			break
 		}
-		after := remaining[idx+len(needle):]
-		after = strings.TrimSpace(after)
-		if strings.HasPrefix(after, "<string>") {
-			after = after[len("<string>"):]
-			end := strings.Index(after, "</string>")
-			if end >= 0 {
-				last = strings.TrimSpace(after[:end])
+		absIdx := cursor + idx
+		// Update depth based on every <dict>/</dict> between cursor and this match.
+		scanTags(s[cursor:absIdx])
+		// Skip past the <key>PayloadDisplayName</key> tag itself.
+		cursor = absIdx + len(needle)
+		// At depth 1, this is the top-level dict's PayloadDisplayName.
+		if depth == 1 {
+			after := strings.TrimSpace(s[cursor:])
+			if strings.HasPrefix(after, "<string>") {
+				after = after[len("<string>"):]
+				if end := strings.Index(after, "</string>"); end >= 0 {
+					// Decode XML entities so a name like "VPN &amp; Wi-Fi"
+					// yields "VPN & Wi-Fi", matching the identity Fleet reports.
+					return html.UnescapeString(strings.TrimSpace(after[:end]))
+				}
 			}
 		}
-		remaining = remaining[idx+len(needle):]
 	}
-
-	return last
+	return ""
 }
-
 
 // profileNameFromFilename derives a profile name from the filename by stripping
 // the extension. This is the fallback when content extraction fails.

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/TsekNet/fleet-plan/internal/teamdir"
 )
 
 func TestExtractPathRefs(t *testing.T) {
@@ -122,6 +124,58 @@ func TestCheckoutBaseline_ExtractsFiles(t *testing.T) {
 	}
 	if !strings.Contains(string(policyContent), "name: SSH") {
 		t.Errorf("expected policy file content, got: %s", policyContent)
+	}
+}
+
+// TestCheckoutBaseline_UsesBaseLayoutNotWorktree covers the migration case:
+// the base ref stores per-team YAML under teams/, but the current worktree has
+// migrated to fleets/. The extracted baseline must reflect the base ref's
+// teams/ layout; pre-creating the worktree's preferred fleets/ directory would
+// make teamdir.Resolve pick fleets/ and cause baseline parsing to ignore the
+// extracted legacy team files.
+func TestCheckoutBaseline_UsesBaseLayoutNotWorktree(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+
+	// Base commit: legacy teams/ layout.
+	os.MkdirAll(filepath.Join(dir, "teams"), 0o755)
+	os.WriteFile(filepath.Join(dir, "teams", "test.yml"), []byte("name: Test\n"), 0o644)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-m", "init")
+	baseSHA := gitOutput(t, dir, "rev-parse", "HEAD")
+
+	// Worktree migrates teams/ -> fleets/ (rename shows as delete + add).
+	if err := os.Rename(filepath.Join(dir, "teams"), filepath.Join(dir, "fleets")); err != nil {
+		t.Fatalf("migrate teams to fleets: %v", err)
+	}
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-m", "migrate to fleets")
+
+	// The changed set for a migration includes both the deleted teams/ file
+	// and the added fleets/ file; only the teams/ one exists at the base ref.
+	tmpRoot, cleanup, err := CheckoutBaseline(dir, baseSHA, []string{"teams/test.yml", "fleets/test.yml"})
+	if err != nil {
+		t.Fatalf("CheckoutBaseline: %v", err)
+	}
+	defer cleanup()
+
+	// The base team file must be extracted under teams/.
+	if _, err := os.Stat(filepath.Join(tmpRoot, "teams", "test.yml")); err != nil {
+		t.Fatalf("base teams/test.yml not extracted: %v", err)
+	}
+
+	// No empty fleets/ directory should shadow the base teams/ layout.
+	if info, err := os.Stat(filepath.Join(tmpRoot, "fleets")); err == nil && info.IsDir() {
+		t.Errorf("baseline pre-created fleets/ directory, masking the base teams/ layout")
+	}
+
+	// teamdir.Resolve on the baseline must select the base ref's layout.
+	if got := teamdir.Resolve(tmpRoot); got != "teams" {
+		t.Errorf("teamdir.Resolve(baseline) = %q, want %q", got, "teams")
 	}
 }
 
