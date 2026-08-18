@@ -149,7 +149,9 @@ func TestCheckoutBaseline_UsesBaseLayoutNotWorktree(t *testing.T) {
 	baseSHA := gitOutput(t, dir, "rev-parse", "HEAD")
 
 	// Worktree migrates teams/ -> fleets/ (rename shows as delete + add).
-	os.Rename(filepath.Join(dir, "teams"), filepath.Join(dir, "fleets"))
+	if err := os.Rename(filepath.Join(dir, "teams"), filepath.Join(dir, "fleets")); err != nil {
+		t.Fatalf("migrate teams to fleets: %v", err)
+	}
 	gitRun(t, dir, "add", "-A")
 	gitRun(t, dir, "commit", "-m", "migrate to fleets")
 
