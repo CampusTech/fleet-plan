@@ -1244,3 +1244,32 @@ team_settings:
 		})
 	}
 }
+
+func TestReadProfileContent(t *testing.T) {
+	dir := t.TempDir()
+
+	good := filepath.Join(dir, "profile.mobileconfig")
+	if err := os.WriteFile(good, []byte("<plist/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "readable file", path: good, want: "<plist/>"},
+		{name: "missing file", path: filepath.Join(dir, "nope.mobileconfig")},
+		// A directory stats fine but cannot be read; content diffing then
+		// falls back to name-only matching rather than failing the parse.
+		{name: "path is a directory", path: dir},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := readProfileContent(tt.path); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

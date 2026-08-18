@@ -99,19 +99,34 @@ type ScriptEnricher interface {
 	EnrichFleetAppScripts(ctx context.Context, apps []api.TeamFleetApp)
 }
 
+// ProfileEnricher downloads the stored content of MDM profiles so their
+// payload keys can be compared. Implementations populate Content on each
+// profile that has a ProfileUUID; failures leave Content empty.
+type ProfileEnricher interface {
+	EnrichProfileContents(ctx context.Context, profiles []api.Profile)
+}
+
 // DiffOption configures optional Diff behavior.
 type DiffOption func(*diffOptions)
 
 type diffOptions struct {
-	enricher      ScriptEnricher
-	baseline      *parser.ParsedRepo
-	verbose       bool
-	includeGlobal bool
+	enricher        ScriptEnricher
+	profileEnricher ProfileEnricher
+	baseline        *parser.ParsedRepo
+	verbose         bool
+	includeGlobal   bool
 }
 
 // WithScriptEnricher enables script-level diffing for fleet-maintained apps.
 func WithScriptEnricher(e ScriptEnricher) DiffOption {
 	return func(o *diffOptions) { o.enricher = e }
+}
+
+// WithProfileEnricher enables content-level diffing of MDM profiles. Without
+// it, profiles are matched by name only and content changes are inferred from
+// the changed-file list.
+func WithProfileEnricher(e ProfileEnricher) DiffOption {
+	return func(o *diffOptions) { o.profileEnricher = e }
 }
 
 // WithVerbose enables detailed stderr logging of baseline subtraction.
@@ -198,7 +213,7 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedT
 		result.Errors = append(result.Errors, "profiles diff skipped: API token lacks permission to read profiles")
 	} else {
 		var warnings []string
-		result.Profiles, warnings = diffProfiles(current.Profiles, proposed.Profiles, changedFiles)
+		result.Profiles, warnings = diffProfiles(current.Profiles, proposed.Profiles, changedFiles, cfg.profileEnricher)
 		result.Errors = append(result.Errors, warnings...)
 	}
 
@@ -235,7 +250,7 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedT
 				base.Policies = diffPolicies(current.Policies, baseTeam.Policies)
 			}
 			if !current.ProfilesUnavailable {
-				base.Profiles, _ = diffProfiles(current.Profiles, baseTeam.Profiles, nil)
+				base.Profiles, _ = diffProfiles(current.Profiles, baseTeam.Profiles, nil, cfg.profileEnricher)
 			}
 			if !current.ScriptsUnavailable {
 				base.Scripts = diffScripts(current.Scripts, baseTeam.Scripts)
@@ -406,7 +421,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				result.Errors = append(result.Errors, "profiles diff skipped: API token lacks permission to read profiles")
 			} else {
 				var profileWarnings []string
-				result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles, changedFiles)
+				result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles, changedFiles, cfg.profileEnricher)
 				result.Errors = append(result.Errors, profileWarnings...)
 			}
 
@@ -437,7 +452,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 						baseDiff.Software = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
 					if !currentTeam.ProfilesUnavailable {
-						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles, nil)
+						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles, nil, cfg.profileEnricher)
 					}
 					if !currentTeam.ScriptsUnavailable {
 						baseDiff.Scripts = diffScripts(currentTeam.Scripts, baseTeam.Scripts)
@@ -1326,11 +1341,21 @@ func normalizeFleetPlatform(platform string) string {
 	}
 }
 
-func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, changedFiles []string) (ResourceDiff, []string) {
+func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, changedFiles []string, enricher ProfileEnricher) (ResourceDiff, []string) {
 	var diff ResourceDiff
 	var warnings []string
 
-	currentMap := make(map[string]api.Profile)
+	// Index by name rather than copying, so downloaded content can be written
+	// back into the caller's slice. That doubles as a cache: the baseline pass
+	// runs diffProfiles again over the same profiles and reuses the content
+	// instead of downloading everything a second time.
+	currentIdx := make(map[string]int, len(current))
+	for i := range current {
+		currentIdx[current[i].Name] = i
+	}
+	fetchProfileContents(current, currentIdx, proposed, enricher)
+
+	currentMap := make(map[string]api.Profile, len(current))
 	for _, p := range current {
 		currentMap[p.Name] = p
 	}
@@ -1362,10 +1387,17 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 				Name:   name,
 				Fields: fields,
 			})
+		} else if change, conclusive := profileContentChange(currentMap[name], p); conclusive {
+			// Content was compared: trust it over the git signal, which only
+			// says the file was touched, not that anything meaningful changed.
+			if change != nil {
+				diff.Modified = append(diff.Modified, *change)
+			}
 		} else if changedSet[p.Path] {
-			// The Fleet API does not return profile content, so we cannot
-			// compare payloads. When the profile XML file appears in the
-			// git changed-files list, treat it as modified.
+			// Content comparison was unavailable (no enricher, unreadable file,
+			// or a format we cannot flatten). Fall back to the git signal: the
+			// profile file changed in this MR, so report it as modified without
+			// naming keys.
 			diff.Modified = append(diff.Modified, ResourceChange{
 				Name: name,
 				Fields: map[string]FieldDiff{
@@ -1384,6 +1416,87 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 	}
 
 	return diff, warnings
+}
+
+// fetchProfileContents downloads, in one batch, the stored content of every
+// profile whose checksum does not already prove it unchanged. Profiles are
+// updated in place so a later pass over the same slice (baseline subtraction)
+// reuses what was fetched here.
+//
+// Batching matters: fetching one profile per call would serialize the round
+// trips and defeat the client's own concurrency limit.
+func fetchProfileContents(current []api.Profile, currentIdx map[string]int, proposed []parser.ParsedProfile, enricher ProfileEnricher) {
+	if enricher == nil {
+		return
+	}
+
+	var needed []api.Profile
+	for _, p := range proposed {
+		i, ok := currentIdx[p.Name]
+		if !ok || p.Content == "" || current[i].Content != "" || current[i].ProfileUUID == "" {
+			continue
+		}
+		if current[i].Checksum != "" && current[i].Checksum == profileChecksum([]byte(p.Content)) {
+			continue // unchanged; no need for the bytes
+		}
+		needed = append(needed, current[i])
+	}
+	if len(needed) == 0 {
+		return
+	}
+
+	enricher.EnrichProfileContents(context.Background(), needed)
+
+	for _, n := range needed {
+		if i, ok := currentIdx[n.Name]; ok {
+			current[i].Content = n.Content
+		}
+	}
+}
+
+// profileContentChange compares one profile's stored content against its local
+// file and reports which payload keys differ. The second return value is false
+// when no content-level comparison could be made, so the caller can fall back
+// to the changed-file heuristic.
+//
+// Only key names ever reach the result. Profile payloads carry certificates,
+// passwords, and enroll secrets, and this output lands in CI logs and MR
+// comments.
+func profileContentChange(cur api.Profile, proposed parser.ParsedProfile) (*ResourceChange, bool) {
+	if proposed.Content == "" {
+		return nil, false
+	}
+
+	// Fleet reports the stored profile's MD5. A match means the stored profile
+	// is byte-identical to the local file: unchanged, and nothing was
+	// downloaded for it.
+	if cur.Checksum != "" && cur.Checksum == profileChecksum([]byte(proposed.Content)) {
+		return nil, true
+	}
+
+	if cur.Content == "" {
+		return nil, false
+	}
+
+	currentKeys, err := profileKeys([]byte(cur.Content))
+	if err != nil {
+		return nil, false
+	}
+	proposedKeys, err := profileKeys([]byte(proposed.Content))
+	if err != nil {
+		return nil, false
+	}
+
+	changed := profileKeyChanges(currentKeys, proposedKeys)
+	if len(changed) == 0 {
+		// The bytes differ but every differing key is a $VAR Fleet substitutes
+		// server-side, so there is no real change to report.
+		return nil, true
+	}
+	return &ResourceChange{
+		Name:    proposed.Name,
+		Warning: profileDiffSummary(changed),
+	}, true
 }
 
 // diffScripts compares current scripts (from API) against proposed scripts

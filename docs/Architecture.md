@@ -100,9 +100,11 @@ Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched 
 | Software packages | `referenced_yaml_path` | url, hash, self_service |
 | Fleet-maintained apps | `slug` | self_service |
 | App Store apps | `app_store_id` | self_service |
-| Profiles | PayloadDisplayName | add/delete only |
+| Profiles | PayloadDisplayName | changed payload key paths (names only, never values) |
 | Scripts | filename | line count diff (`+N/-N`, `~N` for single-line) |
 | Labels | `name` (cross-ref) | valid/missing with host counts |
+
+Profile content is compared key by key. The profile list carries each stored profile's checksum, so a profile whose local file hashes to the same value is skipped without downloading anything; only the rest are fetched via `?alt=media`. Payload *values* are never rendered — profiles carry certificates, passwords, and enroll secrets, and the diff is posted to MRs. Keys whose local value references a Fleet variable (`$NAME` or `${NAME}`) are ignored, since Fleet substitutes them server-side and the stored value would never match. A value that merely contains a dollar sign is compared normally. Content for the profiles that do need comparing is downloaded in a single batch and reused by the baseline pass. Formats that cannot be flattened (Windows SyncML XML) fall back to the changed-file heuristic.
 
 Whitespace is normalized before comparison to avoid false positives from YAML vs API newline differences. Per-field diffs are stored in `ResourceChange.Fields` for both added and modified resources.
 

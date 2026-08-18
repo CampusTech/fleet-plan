@@ -176,7 +176,12 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	diffOpts := []diff.DiffOption{diff.WithScriptEnricher(client), diff.WithVerbose(flagVerbose), diff.WithIncludeGlobal(includeGlobal)}
+	diffOpts := []diff.DiffOption{
+		diff.WithScriptEnricher(client),
+		diff.WithProfileEnricher(client),
+		diff.WithVerbose(flagVerbose),
+		diff.WithIncludeGlobal(includeGlobal),
+	}
 	if baseline != nil {
 		diffOpts = append(diffOpts, diff.WithBaseline(baseline))
 	}

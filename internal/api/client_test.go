@@ -1306,3 +1306,148 @@ func TestFetchAllNoTeamFatalErrors(t *testing.T) {
 		})
 	}
 }
+
+// ---------- profile content ----------
+
+func TestGetProfileContent(t *testing.T) {
+	const body = `<?xml version="1.0"?><plist version="1.0"><dict/></plist>`
+
+	var gotPath, gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		fmt.Fprint(w, body)
+	}))
+	defer ts.Close()
+
+	content, err := testClient(t, ts, "tok").GetProfileContent(context.Background(), "uuid-1")
+	if err != nil {
+		t.Fatalf("GetProfileContent: %v", err)
+	}
+	if content != body {
+		t.Errorf("content: got %q", content)
+	}
+	if gotPath != "/api/v1/fleet/configuration_profiles/uuid-1" {
+		t.Errorf("path: got %q", gotPath)
+	}
+	if gotQuery != "alt=media" {
+		t.Errorf("query: got %q, want alt=media", gotQuery)
+	}
+}
+
+func TestGetProfileContentErrors(t *testing.T) {
+	t.Run("empty uuid", func(t *testing.T) {
+		if _, err := testClient(t, httptest.NewServer(http.NotFoundHandler()), "tok").
+			GetProfileContent(context.Background(), ""); err == nil {
+			t.Error("expected an error for an empty UUID")
+		}
+	})
+
+	t.Run("http error", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer ts.Close()
+
+		_, err := testClient(t, ts, "tok").GetProfileContent(context.Background(), "u")
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !isPermissionError(err) {
+			t.Errorf("error should be recognized as a permission error: %v", err)
+		}
+	})
+}
+
+func TestEnrichProfileContents(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// One profile is readable, the other is refused.
+		if strings.HasSuffix(r.URL.Path, "denied") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		fmt.Fprint(w, "<plist version=\"1.0\"><dict/></plist>")
+	}))
+	defer ts.Close()
+
+	profiles := []Profile{
+		{ProfileUUID: "ok"},
+		{ProfileUUID: "denied"},
+		{ProfileUUID: ""}, // skipped entirely
+	}
+	testClient(t, ts, "tok").EnrichProfileContents(context.Background(), profiles)
+
+	if profiles[0].Content == "" {
+		t.Error("readable profile: content not populated")
+	}
+	// A failed download is non-fatal and leaves Content empty, so the diff can
+	// fall back to name-only matching.
+	if profiles[1].Content != "" {
+		t.Errorf("denied profile: got content %q, want empty", profiles[1].Content)
+	}
+	if profiles[2].Content != "" {
+		t.Errorf("uuid-less profile: got content %q, want empty", profiles[2].Content)
+	}
+}
+
+func TestGetProfileContentTransportErrors(t *testing.T) {
+	t.Run("unbuildable request URL", func(t *testing.T) {
+		// A control character in the base URL cannot be turned into a request.
+		c := &Client{baseURL: "https://example.com/\x7f", token: "tok", httpClient: &http.Client{}}
+		if _, err := c.GetProfileContent(context.Background(), "u"); err == nil {
+			t.Error("expected an error building the request")
+		}
+	})
+
+	t.Run("connection failure", func(t *testing.T) {
+		ts := httptest.NewServer(http.NotFoundHandler())
+		url := ts.URL
+		ts.Close() // nothing is listening any more
+
+		t.Setenv("FLEET_PLAN_INSECURE", "1")
+		c, err := NewClient(url, "tok")
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		if _, err := c.GetProfileContent(context.Background(), "u"); err == nil {
+			t.Error("expected a transport error")
+		}
+	})
+
+	t.Run("truncated response body", func(t *testing.T) {
+		// Hijack the connection so the headers promise 512 bytes, then hang up
+		// after 7. The client must fail while reading rather than hand back a
+		// half profile that would diff as a pile of removed keys.
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			conn, buf, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 512\r\n\r\n<plist>")
+			_ = buf.Flush()
+		}))
+		defer ts.Close()
+
+		if _, err := testClient(t, ts, "tok").GetProfileContent(context.Background(), "u"); err == nil {
+			t.Error("expected an error reading the truncated body")
+		}
+	})
+}
+
+func TestGetProfileContentOversized(t *testing.T) {
+	// An oversized profile must be an error rather than silently truncated
+	// content, which would diff as a pile of removed keys.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, maxProfileContentSize+10))
+	}))
+	defer ts.Close()
+
+	_, err := testClient(t, ts, "tok").GetProfileContent(context.Background(), "u")
+	if err == nil {
+		t.Fatal("expected an error for an oversized profile")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should say the profile is too large: %v", err)
+	}
+}
