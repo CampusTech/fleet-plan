@@ -15,17 +15,26 @@ if [[ ! -f "$profile" ]]; then
   exit 1
 fi
 
+# Validate the floor before it reaches awk, where a non-numeric value would be
+# coerced to 0 and silently pass everything.
+if ! [[ "$floor" =~ ^[0-9]+(\.[0-9]+)?$ ]] || awk -v f="$floor" 'BEGIN { exit !(f > 100) }'; then
+  echo "floor must be a number between 0 and 100, got: $floor" >&2
+  exit 1
+fi
+
 fail=0
 
 # Per-package coverage: sum covered vs total statements per package directory.
 while read -r pkg covered total; do
-  pct=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.1f", (t == 0 ? 100 : 100 * c / t) }')
+  # Compare the unrounded value: 74.96% displays as 75.0% but is below a 75%
+  # floor and must fail.
+  raw=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.10f", (t == 0 ? 100 : 100 * c / t) }')
   status="ok"
-  if awk -v p="$pct" -v f="$floor" 'BEGIN { exit !(p < f) }'; then
+  if awk -v p="$raw" -v f="$floor" 'BEGIN { exit !(p < f) }'; then
     status="BELOW FLOOR"
     fail=1
   fi
-  printf '%-55s %6s%%  %s\n' "$pkg" "$pct" "$status"
+  printf '%-55s %6.1f%%  %s\n' "$pkg" "$raw" "$status"
 done < <(
   awk '
     NR > 1 {
@@ -44,12 +53,12 @@ done < <(
 
 # Total from the profile directly rather than `go tool cover -func`, which
 # needs the packages to be resolvable from the current module.
-total_pct=$(awk '
+total_raw=$(awk '
   NR > 1 { stmts += $2; if ($3 > 0) covered += $2 }
-  END { printf "%.1f", (stmts == 0 ? 100 : 100 * covered / stmts) }
+  END { printf "%.10f", (stmts == 0 ? 100 : 100 * covered / stmts) }
 ' "$profile")
-printf '%-55s %6s%%\n' "TOTAL" "$total_pct"
-if awk -v p="$total_pct" -v f="$floor" 'BEGIN { exit !(p < f) }'; then
+printf '%-55s %6.1f%%\n' "TOTAL" "$total_raw"
+if awk -v p="$total_raw" -v f="$floor" 'BEGIN { exit !(p < f) }'; then
   fail=1
 fi
 
