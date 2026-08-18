@@ -3,6 +3,7 @@ package parser
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1106,6 +1107,139 @@ func TestIsNoTeam(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsNoTeam(tt.teamName, tt.sourceFile); got != tt.want {
 				t.Errorf("IsNoTeam(%q, %q) = %v, want %v", tt.teamName, tt.sourceFile, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTeamSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		want    map[string]any
+		wantNil bool
+	}{
+		{
+			name: "modern settings key",
+			yaml: `name: T
+settings:
+  host_expiry_settings:
+    host_expiry_enabled: true
+    host_expiry_window: 30
+`,
+			want: map[string]any{
+				"host_expiry_settings": map[string]any{
+					"host_expiry_enabled": true,
+					"host_expiry_window":  30,
+				},
+			},
+		},
+		{
+			name: "legacy team_settings key",
+			yaml: `name: T
+team_settings:
+  features:
+    enable_software_inventory: true
+`,
+			want: map[string]any{
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		},
+		{
+			// fleetctl gitops accepts both spellings; the modern one wins.
+			name: "settings wins over team_settings",
+			yaml: `name: T
+settings:
+  features:
+    enable_software_inventory: true
+team_settings:
+  features:
+    enable_software_inventory: false
+`,
+			want: map[string]any{
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		},
+		{
+			name:    "neither key present",
+			yaml:    "name: T\n",
+			wantNil: true,
+		},
+		{
+			// A scalar where a mapping belongs cannot be decoded; the parser
+			// moves on to the legacy key rather than failing the file.
+			name: "non-mapping settings falls through to team_settings",
+			yaml: `name: T
+settings: "not a mapping"
+team_settings:
+  features:
+    enable_software_inventory: true
+`,
+			want: map[string]any{
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		},
+		{
+			name:    "empty settings block",
+			yaml:    "name: T\nsettings: {}\n",
+			wantNil: true,
+		},
+		{
+			// An explicit empty mapping is a declaration ("no settings"), so
+			// it wins over the legacy key just like a populated one would.
+			name: "empty settings beats team_settings",
+			yaml: `name: T
+settings: {}
+team_settings:
+  features:
+    enable_software_inventory: true
+`,
+			wantNil: true,
+		},
+		{
+			// A key with no value declares nothing, so the legacy key is used.
+			name: "null settings falls through to team_settings",
+			yaml: `name: T
+settings:
+team_settings:
+  features:
+    enable_software_inventory: true
+`,
+			want: map[string]any{
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			teamsDir := filepath.Join(root, "teams")
+			if err := os.MkdirAll(teamsDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(teamsDir, "t.yml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			repo, err := ParseRepo(root, nil, "")
+			if err != nil {
+				t.Fatalf("ParseRepo: %v", err)
+			}
+			if len(repo.Teams) != 1 {
+				t.Fatalf("got %d teams, want 1 (errors: %v)", len(repo.Teams), repo.Errors)
+			}
+
+			got := repo.Teams[0].Settings
+			if tt.wantNil {
+				if got != nil {
+					t.Fatalf("Settings: got %v, want nil", got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Settings:\n got %#v\nwant %#v", got, tt.want)
 			}
 		})
 	}

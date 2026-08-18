@@ -81,7 +81,7 @@ Config file supports multiple contexts:
 
 ## Parser
 
-Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also parses `default.yml` for labels, `org_settings`, `agent_options`, `controls`, and global policies/queries. All path references are validated against the repo root to prevent traversal.
+Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also parses `default.yml` for labels, `org_settings`, `agent_options`, `controls`, and global policies/queries. A team's `settings:` block (or the older `team_settings:` spelling) is kept as a nested map for field-level diffing. All path references are validated against the repo root to prevent traversal.
 
 ---
 
@@ -91,7 +91,8 @@ Compares `FleetState` (API) vs `ParsedRepo` (YAML). Produces `[]DiffResult` per 
 
 | Resource | Match key | Diff fields |
 |----------|-----------|-------------|
-| Config sections | dot-path key | old/new value (skips `$VAR` placeholders) |
+| Config sections (global) | dot-path key | old/new value (skips `$VAR` placeholders) |
+| Team `settings:` | dot-path key | old/new value vs the team object from `GET /teams`; `secrets:` is never diffed |
 | Policies | `name` | query, description, resolution, platform, critical |
 | Queries | `name` | query, interval, platform, logging |
 | Software packages | `referenced_yaml_path` | url, hash, self_service |

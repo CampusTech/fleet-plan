@@ -85,7 +85,8 @@ func RenderDiffTerminal(results []diff.DiffResult, verbose bool) string {
 func renderTeamDiff(result diff.DiffResult, summary *DiffSummary, verbose bool) string {
 	var lines []string
 
-	// Config changes (global scope only)
+	// Config changes: org_settings/agent_options/controls for the global
+	// scope, `settings:` for a team.
 	if len(result.Config) > 0 {
 		lines = append(lines, renderConfigChanges(result.Config, summary, verbose))
 	}

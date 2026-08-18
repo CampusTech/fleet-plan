@@ -161,6 +161,56 @@ func TestGetTeams(t *testing.T) {
 	}
 }
 
+func TestGetTeamsCapturesRawSettings(t *testing.T) {
+	// The settings blocks a team YAML configures live on the team object
+	// itself; the client keeps the raw object so they can be diffed.
+	const body = `{"teams":[{
+		"id": 1,
+		"name": "Workstations",
+		"host_expiry_settings": {"host_expiry_enabled": true, "host_expiry_window": 30},
+		"webhook_settings": {"failing_policies_webhook": {"destination_url": "https://example.com/hook"}},
+		"features": {"enable_software_inventory": true}
+	}]}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, body)
+	}))
+	defer ts.Close()
+
+	teams, err := testClient(t, ts, "testtoken").GetTeams(context.Background())
+	if err != nil {
+		t.Fatalf("GetTeams: %v", err)
+	}
+	if len(teams) != 1 {
+		t.Fatalf("got %d teams, want 1", len(teams))
+	}
+
+	// The typed fields still decode.
+	if teams[0].ID != 1 || teams[0].Name != "Workstations" {
+		t.Errorf("typed fields: got id=%d name=%q", teams[0].ID, teams[0].Name)
+	}
+
+	hes, ok := teams[0].Settings["host_expiry_settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("Settings missing host_expiry_settings: %+v", teams[0].Settings)
+	}
+	if hes["host_expiry_enabled"] != true {
+		t.Errorf("host_expiry_enabled: got %v, want true", hes["host_expiry_enabled"])
+	}
+	if _, ok := teams[0].Settings["features"]; !ok {
+		t.Errorf("Settings missing features: %+v", teams[0].Settings)
+	}
+}
+
+func TestTeamUnmarshalJSONNonObject(t *testing.T) {
+	// A team that is not a JSON object should surface as an error rather than
+	// panicking or silently producing a half-decoded team.
+	var team Team
+	if err := json.Unmarshal([]byte(`"not-an-object"`), &team); err == nil {
+		t.Fatal("expected an error unmarshalling a non-object team")
+	}
+}
+
 // ---------- GetPolicies ----------
 
 func TestGetPoliciesPathRouting(t *testing.T) {
