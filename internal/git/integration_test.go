@@ -255,16 +255,16 @@ func mockFleetAPI(t *testing.T) *httptest.Server {
 					"software": map[string]any{
 						"packages": []map[string]any{
 							{
-								"url":                   "https://example.com/cinc-fedora.rpm",
-								"hash_sha256":           "026a755000000000000000000000000000000000000000000000000000000000",
-								"self_service":          false,
-								"referenced_yaml_path":  "software/linux/cinc-fedora/cinc-fedora.yml",
+								"url":                  "https://example.com/cinc-fedora.rpm",
+								"hash_sha256":          "026a755000000000000000000000000000000000000000000000000000000000",
+								"self_service":         false,
+								"referenced_yaml_path": "software/linux/cinc-fedora/cinc-fedora.yml",
 							},
 							{
-								"url":                   "https://example.com/dell-assist.exe",
-								"hash_sha256":           "bbbb",
-								"self_service":          false,
-								"referenced_yaml_path":  "software/windows/dell-assist/dell-assist.yml",
+								"url":                  "https://example.com/dell-assist.exe",
+								"hash_sha256":          "bbbb",
+								"self_service":         false,
+								"referenced_yaml_path": "software/windows/dell-assist/dell-assist.yml",
 							},
 						},
 						"fleet_maintained_apps": nil,

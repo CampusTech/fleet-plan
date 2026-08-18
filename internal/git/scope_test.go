@@ -32,14 +32,14 @@ func TestResolveScope(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		setup          func(t *testing.T, root string) // create files in temp dir
-		changedFiles   []string
-		envFile        string
-		wantGlobal     bool
-		wantTeams      []string
-		wantChanged    []string
-		wantTeamCount  int // -1 to skip count check
+		name          string
+		setup         func(t *testing.T, root string) // create files in temp dir
+		changedFiles  []string
+		envFile       string
+		wantGlobal    bool
+		wantTeams     []string
+		wantChanged   []string
+		wantTeamCount int // -1 to skip count check
 	}{
 		{
 			name: "policy change infers team",

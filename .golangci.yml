@@ -1,0 +1,29 @@
+# golangci-lint configuration. Run locally with `golangci-lint run`.
+version: "2"
+
+linters:
+  # The default set already covers errcheck, govet, ineffassign, staticcheck,
+  # and unused. revive is the style/consistency linter on top of that.
+  default: standard
+  enable:
+    - revive
+  settings:
+    revive:
+      rules:
+        - name: exported
+          # Stuttering names (diff.DiffResult, merge.MergeFiles) are load-bearing
+          # in these internal packages; renaming them is churn, not clarity.
+          arguments: [disableStutteringCheck]
+        - name: package-comments
+  exclusions:
+    rules:
+      # Tests write to os.Stdout pipes and t.Setenv-style helpers where the
+      # error is either impossible or irrelevant to the assertion.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt

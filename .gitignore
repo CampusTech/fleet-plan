@@ -24,3 +24,7 @@ go.work
 .idea/
 *.swp
 *.swo
+
+# Temp merged config written into the repo by --base/--env (resolveDefaultFile).
+# Normally deleted on exit; ignored so a crashed run cannot commit one.
+.fleet-plan-default-*.yml

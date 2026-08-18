@@ -22,8 +22,8 @@ var (
 )
 
 const (
-	maxLineWidth = 80  // target line width for truncation
-	maxFields    = 3   // max fields shown in default mode before "... and N more"
+	maxLineWidth = 80         // target line width for truncation
+	maxFields    = 3          // max fields shown in default mode before "... and N more"
 	fieldIndent  = "        " // 8 spaces for field lines under resource name
 )
 

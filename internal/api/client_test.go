@@ -605,10 +605,10 @@ func TestGetSoftwareTitleDetail(t *testing.T) {
 
 func TestFetchAllSoftware403(t *testing.T) {
 	tests := []struct {
-		name       string
-		status     int
-		wantNil    bool
-		wantErr    bool
+		name    string
+		status  int
+		wantNil bool
+		wantErr bool
 	}{
 		{name: "200 returns software", status: 200},
 		{name: "403 gracefully returns nil", status: 403, wantNil: true},

@@ -10,16 +10,16 @@ git clone https://github.com/CampusTech/fleet-plan.git && cd fleet-plan
 go build ./...
 go vet ./...
 go test -race ./...
+golangci-lint run
 ```
 
-Go 1.26+. See [docs/Architecture.md](docs/Architecture.md) for data flow and package layout.
+Go 1.26+. CI runs the same commands plus `govulncheck ./...` and CodeQL. See [docs/Architecture.md](docs/Architecture.md) for data flow and package layout.
 
 ## Before opening a pull request
 
 - `go build ./...`, `go vet ./...`, and `go test -race ./...` all pass.
-- `gofmt` clean on the Go files you touched (`gofmt -l <files>` prints nothing). A
-  repo-wide `gofmt` cleanup lands with golangci-lint; until then `gofmt -l .` still
-  reports pre-existing drift in files you did not change.
+- `golangci-lint run` reports no issues (`golangci-lint fmt` applies the gofmt /
+  gofumpt formatting it expects).
 - New or changed logic has table-driven tests. Coverage should not regress.
 - Commit messages use conventional prefixes (`feat:`, `fix:`, `test:`, `docs:`, `chore:`).
 

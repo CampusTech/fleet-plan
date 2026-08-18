@@ -26,7 +26,7 @@ func CheckoutBaseline(repoRoot string, baseRef string, files []string) (tmpRoot 
 	if err != nil {
 		return "", nil, fmt.Errorf("creating temp dir: %w", err)
 	}
-	cleanup = func() { os.RemoveAll(tmpRoot) }
+	cleanup = func() { _ = os.RemoveAll(tmpRoot) }
 
 	// Resolve which files we need: the explicitly changed files, plus any
 	// files they reference (path: directives in team YAML). We start with
@@ -79,7 +79,10 @@ func CheckoutBaseline(repoRoot string, baseRef string, files []string) (tmpRoot 
 	// explicit MkdirAll only matters when the base layout was detected but is
 	// otherwise empty.
 	if baseLayout != "" {
-		os.MkdirAll(filepath.Join(tmpRoot, baseLayout), 0o755)
+		if err := os.MkdirAll(filepath.Join(tmpRoot, baseLayout), 0o755); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("creating baseline team dir: %w", err)
+		}
 	}
 
 	return tmpRoot, cleanup, nil

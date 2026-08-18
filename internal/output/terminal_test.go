@@ -433,14 +433,14 @@ func TestTruncateToFit(t *testing.T) {
 
 func TestDiffContext(t *testing.T) {
 	tests := []struct {
-		name            string
-		old, new        string
-		maxLen          int
+		name             string
+		old, new         string
+		maxLen           int
 		wantOld, wantNew string
 	}{
 		{
 			name: "short strings returned as-is",
-			old: "hello", new: "world", maxLen: 20,
+			old:  "hello", new: "world", maxLen: 20,
 			wantOld: "hello", wantNew: "world",
 		},
 		{

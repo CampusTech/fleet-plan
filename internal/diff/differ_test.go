@@ -214,7 +214,6 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 			t.Error("expected interval field diff for Servers Uptime")
 		}
 	}
-
 }
 
 // TestDiffTestdataWorkstationsOnly verifies filtered diff for a single team.

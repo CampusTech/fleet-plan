@@ -6,10 +6,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -85,6 +88,10 @@ Strictly read-only -- GET requests only.`,
 
 func runDiff(cmd *cobra.Command, _ []string) error {
 	start := time.Now()
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	auth, err := config.ResolveAuth(flagURL, flagToken, flagRepo)
 	if err != nil {
@@ -162,8 +169,6 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	ctx := context.Background()
-
 	fmt.Fprintf(os.Stderr, "Fetching Fleet state from %s...\n", auth.URL)
 
 	state, err := client.FetchAll(ctx, repo.Global != nil)
@@ -218,11 +223,17 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stderr, "Completed in %s\n", elapsed.Round(time.Millisecond))
 
 	if flagDetailedExitCode && hasChanges {
-		os.Exit(2)
+		// Sentinel rather than os.Exit(2) here: exiting from runDiff skips the
+		// deferred cleanup of the temp merged config file.
+		return errChangesDetected
 	}
 
 	return nil
 }
+
+// errChangesDetected signals --detailed-exitcodes exit status 2. It is not a
+// failure: main translates it to the exit code after runDiff's defers run.
+var errChangesDetected = errors.New("changes detected")
 
 // resolveDefaultFile returns the path to default.yml to pass to ParseRepo.
 // If base+env are provided, they are merged into a temp file and a cleanup
@@ -251,14 +262,14 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 		return "", nil, fmt.Errorf("creating temp file for merged config: %w", err)
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()
+	_ = tmp.Close()
 
 	if err := merge.MergeFiles(base, env, tmpPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return "", nil, fmt.Errorf("merging base+env: %w", err)
 	}
 
-	return tmpPath, func() { os.Remove(tmpPath) }, nil
+	return tmpPath, func() { _ = os.Remove(tmpPath) }, nil
 }
 
 // resolveBaselineDefault returns the path to default.yml for baseline parsing.
@@ -341,7 +352,16 @@ func resolveCIScope(ci git.Env, repo, envFile string, defaultFile *string, expli
 }
 
 func main() {
-	if err := buildRootCmd().Execute(); err != nil {
+	// NotifyContext so an interrupt cancels the in-flight Fleet fetches and
+	// unwinds through runDiff's defers, which delete the temp merged config
+	// file that --base/--env writes inside the repo.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := buildRootCmd().ExecuteContext(ctx); err != nil {
+		if errors.Is(err, errChangesDetected) {
+			os.Exit(2)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
