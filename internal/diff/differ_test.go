@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -1350,7 +1351,7 @@ func TestDiffProfilesMatchByContentName(t *testing.T) {
 		{Path: "/repo/profiles/mac/wifi-corporate.mobileconfig", Name: "wifi-corporate", Platform: "darwin"},
 	}
 
-	diff, warnings := diffProfiles(current, proposed, nil)
+	diff, warnings := diffProfiles(current, proposed, nil, nil)
 	if len(warnings) > 0 {
 		t.Errorf("unexpected warnings: %v", warnings)
 	}
@@ -1373,7 +1374,7 @@ func TestDiffProfilesDetectsRealChanges(t *testing.T) {
 		{Path: "/repo/profiles/mac/new-profile.mobileconfig", Name: "new-profile", Platform: "darwin"},
 	}
 
-	diff, _ := diffProfiles(current, proposed, nil)
+	diff, _ := diffProfiles(current, proposed, nil, nil)
 	if len(diff.Added) != 1 || diff.Added[0].Name != "new-profile" {
 		t.Errorf("expected 1 added profile 'new-profile', got %v", diff.Added)
 	}
@@ -2353,5 +2354,157 @@ func TestSubtractConfigChanges(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// fakeProfileEnricher serves canned profile content and counts downloads, so
+// tests can assert the checksum pre-filter actually avoids fetching.
+type fakeProfileEnricher struct {
+	content map[string]string // profile UUID → stored content
+	calls   int
+}
+
+func (f *fakeProfileEnricher) EnrichProfileContents(_ context.Context, profiles []api.Profile) {
+	f.calls++
+	for i := range profiles {
+		if c, ok := f.content[profiles[i].ProfileUUID]; ok {
+			profiles[i].Content = c
+		}
+	}
+}
+
+func TestDiffProfilesContent(t *testing.T) {
+	const stored = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>PayloadDisplayName</key><string>Wi-Fi</string>
+  <key>PayloadContent</key><array><dict>
+    <key>SSID_STR</key><string>Campus</string>
+    <key>Password</key><string>expanded-secret</string>
+  </dict></array>
+</dict></plist>`
+
+	tests := []struct {
+		name        string
+		local       string
+		checksum    string // as reported by the API for the stored profile
+		wantWarning string
+		wantCalls   int
+	}{
+		{
+			name:      "identical content produces no diff and no download",
+			local:     stored,
+			checksum:  profileChecksum([]byte(stored)),
+			wantCalls: 0,
+		},
+		{
+			name: "changed value names the key",
+			local: strings.Replace(stored,
+				"<key>SSID_STR</key><string>Campus</string>",
+				"<key>SSID_STR</key><string>Campus-Guest</string>", 1),
+			wantWarning: "1 key changed: PayloadContent[0].SSID_STR",
+			wantCalls:   1,
+		},
+		{
+			name: "added key is marked with +",
+			local: strings.Replace(stored,
+				"<key>SSID_STR</key><string>Campus</string>",
+				"<key>SSID_STR</key><string>Campus</string><key>AutoJoin</key><true/>", 1),
+			wantWarning: "1 key changed: +PayloadContent[0].AutoJoin",
+			wantCalls:   1,
+		},
+		{
+			// Fleet expands $VARS when storing a profile, so the bytes always
+			// differ. That must not be reported as a change every single run.
+			name: "variable substitution is not a change",
+			local: strings.Replace(stored,
+				"<string>expanded-secret</string>",
+				"<string>$FLEET_GLOBAL_ENROLL_SECRET</string>", 1),
+			wantCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enricher := &fakeProfileEnricher{content: map[string]string{"uuid-1": stored}}
+			current := []api.Profile{{ProfileUUID: "uuid-1", Name: "Wi-Fi", Platform: "darwin", Checksum: tt.checksum}}
+			proposed := []parser.ParsedProfile{{
+				Name:     "Wi-Fi",
+				Platform: "darwin",
+				Path:     "lib/macos/profiles/wifi.mobileconfig",
+				Content:  tt.local,
+			}}
+
+			diff, warnings := diffProfiles(current, proposed, nil, enricher)
+			if len(warnings) != 0 {
+				t.Errorf("warnings: got %v", warnings)
+			}
+			if enricher.calls != tt.wantCalls {
+				t.Errorf("downloads: got %d, want %d", enricher.calls, tt.wantCalls)
+			}
+
+			if tt.wantWarning == "" {
+				if !diff.IsEmpty() {
+					t.Fatalf("expected no changes, got %+v", diff)
+				}
+				return
+			}
+			if len(diff.Modified) != 1 {
+				t.Fatalf("got %d modified, want 1 (%+v)", len(diff.Modified), diff)
+			}
+			if diff.Modified[0].Warning != tt.wantWarning {
+				t.Errorf("warning: got %q, want %q", diff.Modified[0].Warning, tt.wantWarning)
+			}
+			// No payload value may appear in the output.
+			if strings.Contains(diff.Modified[0].Warning, "secret") ||
+				strings.Contains(diff.Modified[0].Warning, "Campus") {
+				t.Errorf("warning leaked a value: %q", diff.Modified[0].Warning)
+			}
+		})
+	}
+}
+
+func TestDiffProfilesFallsBackToChangedFiles(t *testing.T) {
+	current := []api.Profile{{ProfileUUID: "u", Name: "Windows Thing", Platform: "windows"}}
+	proposed := []parser.ParsedProfile{{
+		Name:     "Windows Thing",
+		Platform: "windows",
+		Path:     "lib/windows/profiles/thing.xml",
+		// SyncML, which is not a property list: keys cannot be flattened.
+		Content: "<Replace><Item><Target><LocURI>./Device/Foo</LocURI></Target></Item></Replace>",
+	}}
+	enricher := &fakeProfileEnricher{content: map[string]string{
+		"u": "<Replace><Item><Target><LocURI>./Device/Bar</LocURI></Target></Item></Replace>",
+	}}
+
+	t.Run("file changed in the MR", func(t *testing.T) {
+		diff, _ := diffProfiles(current, proposed, []string{"lib/windows/profiles/thing.xml"}, enricher)
+		if len(diff.Modified) != 1 {
+			t.Fatalf("got %+v, want 1 modified from the changed-file signal", diff)
+		}
+		if diff.Modified[0].Warning != "" {
+			t.Errorf("warning: got %q, want empty (no keys could be named)", diff.Modified[0].Warning)
+		}
+	})
+
+	t.Run("file not changed in the MR", func(t *testing.T) {
+		diff, _ := diffProfiles(current, proposed, []string{"other.yml"}, enricher)
+		if !diff.IsEmpty() {
+			t.Errorf("got %+v, want no changes", diff)
+		}
+	})
+}
+
+func TestDiffProfilesWithoutEnricher(t *testing.T) {
+	// Without an enricher, behavior is unchanged from before content diffing:
+	// name matching plus the changed-file heuristic.
+	current := []api.Profile{{ProfileUUID: "u", Name: "P", Checksum: "irrelevant"}}
+	proposed := []parser.ParsedProfile{{Name: "P", Path: "p.mobileconfig", Content: "<plist><dict/></plist>"}}
+
+	diff, _ := diffProfiles(current, proposed, []string{"p.mobileconfig"}, nil)
+	if len(diff.Modified) != 1 {
+		t.Fatalf("got %+v, want 1 modified", diff)
+	}
+	if got := diff.Modified[0].Fields["path"].New; got != "p.mobileconfig" {
+		t.Errorf("path field: got %q", got)
 	}
 }

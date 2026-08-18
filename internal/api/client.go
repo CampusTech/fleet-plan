@@ -112,6 +112,10 @@ func isPermissionError(err error) bool {
 	return httpErr.StatusCode == http.StatusForbidden || httpErr.StatusCode == http.StatusNotFound
 }
 
+// maxProfileContentSize caps a downloaded configuration profile (1 MiB).
+// Apple's own profile size limits are far below this.
+const maxProfileContentSize = 1 << 20
+
 // ---------- Response types ----------
 
 // FleetState holds the complete current state fetched from the Fleet API.
@@ -271,6 +275,12 @@ type Profile struct {
 	ProfileUUID string `json:"profile_uuid"`
 	Name        string `json:"name"`
 	Platform    string `json:"platform"`
+	// Checksum is the base64 MD5 of the stored profile. Comparing it against
+	// the local file's checksum decides whether the content has to be
+	// downloaded at all.
+	Checksum string `json:"checksum"`
+	// Content is the raw profile, populated on demand by GetProfileContent.
+	Content string `json:"-"`
 }
 
 // Script represents a Fleet script assigned to a team.
@@ -573,6 +583,68 @@ func (c *Client) GetProfiles(ctx context.Context, teamID uint) ([]Profile, error
 		}
 	}
 	return all, nil
+}
+
+// GetProfileContent downloads a configuration profile's contents via
+// GET /configuration_profiles/:uuid?alt=media, the same download convention
+// the scripts endpoint uses.
+//
+// The returned bytes are the profile as Fleet stores it, which means any
+// $FLEET_* variables in the source file have already been substituted. Callers
+// must not echo this into output: profiles carry certificates and secrets.
+func (c *Client) GetProfileContent(ctx context.Context, profileUUID string) (string, error) {
+	if profileUUID == "" {
+		return "", fmt.Errorf("empty profile UUID")
+	}
+	u := fmt.Sprintf("%s/api/v1/fleet/configuration_profiles/%s?alt=media",
+		c.baseURL, url.PathEscape(profileUUID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", &HTTPError{StatusCode: resp.StatusCode, URL: u, Body: string(body)}
+	}
+
+	content, err := io.ReadAll(io.LimitReader(resp.Body, maxProfileContentSize))
+	if err != nil {
+		return "", fmt.Errorf("reading profile %s: %w", profileUUID, err)
+	}
+	return string(content), nil
+}
+
+// EnrichProfileContents downloads content for the given profiles in parallel
+// and populates Content. Errors are non-fatal: a profile whose content cannot
+// be read simply keeps an empty Content, and the diff falls back to reporting
+// that it changed without naming keys.
+func (c *Client) EnrichProfileContents(ctx context.Context, profiles []Profile) {
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
+	for i := range profiles {
+		if profiles[i].ProfileUUID == "" {
+			continue
+		}
+		idx := i
+		g.Go(func() error {
+			content, err := c.GetProfileContent(gctx, profiles[idx].ProfileUUID)
+			if err != nil {
+				return nil
+			}
+			profiles[idx].Content = content
+			return nil
+		})
+	}
+	// Best-effort: a failed download leaves that profile without content.
+	_ = g.Wait()
 }
 
 // GetScripts fetches scripts for a team with pagination.

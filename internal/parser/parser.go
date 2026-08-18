@@ -200,6 +200,7 @@ type ParsedProfile struct {
 	Path       string `yaml:"path"`
 	Name       string `yaml:"-"` // extracted from file content (PayloadDisplayName, etc.)
 	Platform   string `yaml:"-"` // inferred from file extension
+	Content    string `yaml:"-"` // raw file content, for content-level diffing
 	SourceFile string `yaml:"-"`
 }
 
@@ -554,6 +555,7 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			Path:       resolved,
 			Name:       name,
 			Platform:   "darwin",
+			Content:    readProfileContent(resolved),
 			SourceFile: path,
 		})
 	}
@@ -579,6 +581,7 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			Path:       resolved,
 			Name:       name,
 			Platform:   "windows",
+			Content:    readProfileContent(resolved),
 			SourceFile: path,
 		})
 	}
@@ -603,6 +606,7 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			Path:       resolved,
 			Name:       name,
 			Platform:   inferApplePlatform(ref.Path),
+			Content:    readProfileContent(resolved),
 			SourceFile: path,
 		})
 	}
@@ -946,6 +950,21 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 //   - .xml (Windows): Name element from the SyncML/CSP XML
 //
 // Returns empty string if extraction fails (caller should fall back to filename).
+// readProfileContent reads a profile file for content-level diffing. Returns
+// "" when the file is unreadable or larger than maxProfileSize, in which case
+// the diff falls back to add/delete matching by name.
+func readProfileContent(filePath string) string {
+	info, err := os.Stat(filePath)
+	if err != nil || info.Size() > maxProfileSize {
+		return ""
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 // maxProfileSize is the maximum file size we'll read for profile name extraction.
 // Profiles are typically under 100 KB; 10 MB is a generous safety limit.
 const maxProfileSize = 10 << 20
