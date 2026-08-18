@@ -138,15 +138,25 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 		t.Errorf("Workstations: deleted query name: got %q", ws.Queries.Deleted[0].Name)
 	}
 
-	// Software: slack modified (URL changed), example-app added, old-agent deleted
-	if len(ws.Software.Modified) != 1 {
-		t.Errorf("Workstations: expected 1 modified software, got %d", len(ws.Software.Modified))
+	// Software: slack modified (URL + hash + categories changed), cursor modified (categories added),
+	// example-app added, app store app 803453959 added, old-agent deleted
+	if len(ws.Software.Modified) != 2 {
+		t.Errorf("Workstations: expected 2 modified software, got %d", len(ws.Software.Modified))
 	}
-	if len(ws.Software.Added) != 1 {
-		t.Errorf("Workstations: expected 1 added software, got %d", len(ws.Software.Added))
+	if len(ws.Software.Added) != 2 {
+		t.Errorf("Workstations: expected 2 added software, got %d", len(ws.Software.Added))
 	}
 	if len(ws.Software.Deleted) != 1 {
 		t.Errorf("Workstations: expected 1 deleted software, got %d", len(ws.Software.Deleted))
+	}
+
+	// Verify categories appear in slack's modified fields
+	for _, mod := range ws.Software.Modified {
+		if strings.Contains(mod.Name, "slack") {
+			if _, ok := mod.Fields["categories"]; !ok {
+				t.Error("expected categories field in modified slack software")
+			}
+		}
 	}
 
 	// Profiles: fleet_orbit-allowfulldiskaccess matches by PayloadDisplayName → no diff
@@ -2070,6 +2080,207 @@ func TestDiffChangedFileFilterIncludesProfilePath(t *testing.T) {
 	for _, m := range r.Profiles.Modified {
 		if m.Name == "newsandinterests_windows" {
 			t.Errorf("newsandinterests_windows should be filtered out, but found in modified")
+		}
+	}
+}
+
+func TestDiffSoftwareCategories(t *testing.T) {
+	tests := []struct {
+		name         string
+		current      api.TeamSoftware
+		proposed     parser.ParsedSoftware
+		wantAdded    int
+		wantModified int
+		checkName    string
+		checkHasCat  bool // expect "categories" field in result
+	}{
+		{
+			name: "FMA added with categories",
+			proposed: parser.ParsedSoftware{
+				FleetMaintained: []parser.ParsedFleetApp{
+					{Slug: "chrome/mac", SelfService: true, Categories: []string{"Browsers"}},
+				},
+			},
+			wantAdded: 1, checkName: "fleet app chrome/mac", checkHasCat: true,
+		},
+		{
+			name: "FMA added without categories",
+			proposed: parser.ParsedSoftware{
+				FleetMaintained: []parser.ParsedFleetApp{
+					{Slug: "chrome/mac", SelfService: true},
+				},
+			},
+			wantAdded: 1, checkName: "fleet app chrome/mac", checkHasCat: false,
+		},
+		{
+			name: "package modified set to different set",
+			current: api.TeamSoftware{
+				Packages: []api.TeamSoftwarePackage{
+					{ReferencedYAMLPath: "software/app.yml", URL: "https://x.com/a.pkg", Categories: []string{"Communication"}},
+				},
+			},
+			proposed: parser.ParsedSoftware{
+				Packages: []parser.ParsedSoftwarePackage{
+					{RefPath: "software/app.yml", URL: "https://x.com/a.pkg", Categories: []string{"Productivity"}},
+				},
+			},
+			wantModified: 1, checkName: "software/app.yml", checkHasCat: true,
+		},
+		{
+			name: "package modified set to empty",
+			current: api.TeamSoftware{
+				Packages: []api.TeamSoftwarePackage{
+					{ReferencedYAMLPath: "software/app.yml", URL: "https://x.com/a.pkg", Categories: []string{"Communication"}},
+				},
+			},
+			proposed: parser.ParsedSoftware{
+				Packages: []parser.ParsedSoftwarePackage{
+					{RefPath: "software/app.yml", URL: "https://x.com/a.pkg"},
+				},
+			},
+			wantModified: 1, checkName: "software/app.yml", checkHasCat: true,
+		},
+		{
+			name: "package modified empty to set",
+			current: api.TeamSoftware{
+				Packages: []api.TeamSoftwarePackage{
+					{ReferencedYAMLPath: "software/app.yml", URL: "https://x.com/a.pkg"},
+				},
+			},
+			proposed: parser.ParsedSoftware{
+				Packages: []parser.ParsedSoftwarePackage{
+					{RefPath: "software/app.yml", URL: "https://x.com/a.pkg", Categories: []string{"Communication"}},
+				},
+			},
+			wantModified: 1, checkName: "software/app.yml", checkHasCat: true,
+		},
+		{
+			name: "package modified reorder only no change",
+			current: api.TeamSoftware{
+				Packages: []api.TeamSoftwarePackage{
+					{ReferencedYAMLPath: "software/app.yml", URL: "https://x.com/a.pkg", Categories: []string{"B", "A"}},
+				},
+			},
+			proposed: parser.ParsedSoftware{
+				Packages: []parser.ParsedSoftwarePackage{
+					{RefPath: "software/app.yml", URL: "https://x.com/a.pkg", Categories: []string{"A", "B"}},
+				},
+			},
+			wantModified: 0,
+		},
+		{
+			name: "app store app added with categories",
+			proposed: parser.ParsedSoftware{
+				AppStoreApps: []parser.ParsedAppStoreApp{
+					{AppStoreID: "123456", SelfService: true, Categories: []string{"Productivity"}},
+				},
+			},
+			wantAdded: 1, checkName: "app store app 123456", checkHasCat: true,
+		},
+		{
+			name: "app store app modified categories",
+			current: api.TeamSoftware{
+				AppStoreApps: []api.TeamAppStoreApp{
+					{AppStoreID: "123456", SelfService: true, Categories: []string{"Communication"}},
+				},
+			},
+			proposed: parser.ParsedSoftware{
+				AppStoreApps: []parser.ParsedAppStoreApp{
+					{AppStoreID: "123456", SelfService: true, Categories: []string{"Communication", "Productivity"}},
+				},
+			},
+			wantModified: 1, checkName: "app store app 123456", checkHasCat: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current := &api.FleetState{
+				Teams: []api.Team{{ID: 1, Name: "T", Software: tt.current}},
+			}
+			proposed := &parser.ParsedRepo{
+				Teams: []parser.ParsedTeam{{Name: "T", Software: tt.proposed}},
+			}
+
+			results := Diff(current, proposed, nil, nil)
+			r := results[0]
+
+			if len(r.Software.Added) != tt.wantAdded {
+				t.Errorf("added: got %d, want %d", len(r.Software.Added), tt.wantAdded)
+			}
+			if len(r.Software.Modified) != tt.wantModified {
+				t.Errorf("modified: got %d, want %d", len(r.Software.Modified), tt.wantModified)
+			}
+
+			if tt.checkName != "" {
+				var found *ResourceChange
+				for i := range r.Software.Added {
+					if r.Software.Added[i].Name == tt.checkName {
+						found = &r.Software.Added[i]
+					}
+				}
+				for i := range r.Software.Modified {
+					if r.Software.Modified[i].Name == tt.checkName {
+						found = &r.Software.Modified[i]
+					}
+				}
+				if found == nil {
+					t.Fatalf("expected resource %q not found", tt.checkName)
+				}
+				_, hasCat := found.Fields["categories"]
+				if tt.checkHasCat && !hasCat {
+					t.Error("expected categories field in diff")
+				}
+				if !tt.checkHasCat && hasCat {
+					t.Error("did not expect categories field in diff")
+				}
+				if hasCat {
+					fd := found.Fields["categories"]
+					if !fd.IsSlice {
+						t.Error("categories FieldDiff should have IsSlice=true")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCategoriesEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b []string
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"both empty", []string{}, []string{}, true},
+		{"same order", []string{"A", "B"}, []string{"A", "B"}, true},
+		{"different order", []string{"B", "A"}, []string{"A", "B"}, true},
+		{"different sets", []string{"A"}, []string{"B"}, false},
+		{"different lengths", []string{"A", "B"}, []string{"A"}, false},
+		{"nil vs empty", nil, []string{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := categoriesEqual(tt.a, tt.b); got != tt.want {
+				t.Errorf("categoriesEqual(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatCategories(t *testing.T) {
+	tests := []struct {
+		input []string
+		want  string
+	}{
+		{nil, "[]"},
+		{[]string{}, "[]"},
+		{[]string{"Communication"}, "[Communication]"},
+		{[]string{"Productivity", "Browsers"}, "[Browsers, Productivity]"},
+	}
+	for _, tt := range tests {
+		if got := formatCategories(tt.input); got != tt.want {
+			t.Errorf("formatCategories(%v) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

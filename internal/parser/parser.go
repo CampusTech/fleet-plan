@@ -156,6 +156,7 @@ type ParsedSoftwarePackage struct {
 	URL         string   `yaml:"url"`
 	HashSHA256  string   `yaml:"hash_sha256"`
 	SelfService bool     `yaml:"self_service"`
+	Categories  []string `yaml:"categories"`
 	SourceFile  string   `yaml:"-"`
 	RefPath     string   `yaml:"-"`
 	SourceFiles []string `yaml:"-"` // all referenced file paths (install/uninstall scripts, pre_install_query)
@@ -165,6 +166,7 @@ type ParsedSoftwarePackage struct {
 type ParsedFleetApp struct {
 	Slug              string   `yaml:"slug"`
 	SelfService       bool     `yaml:"self_service"`
+	Categories        []string `yaml:"categories"`
 	InstallScript     string   `yaml:"-"` // resolved file content
 	UninstallScript   string   `yaml:"-"`
 	PreInstallQuery   string   `yaml:"-"`
@@ -174,8 +176,9 @@ type ParsedFleetApp struct {
 
 // ParsedAppStoreApp represents an App Store app.
 type ParsedAppStoreApp struct {
-	AppStoreID  string `yaml:"app_store_id"`
-	SelfService bool   `yaml:"self_service"`
+	AppStoreID  string   `yaml:"app_store_id"`
+	SelfService bool     `yaml:"self_service"`
+	Categories  []string `yaml:"categories"`
 }
 
 // ParsedLabel represents a label from YAML.
@@ -242,6 +245,7 @@ type rawSoftwareBlock struct {
 type rawFleetApp struct {
 	Slug              string      `yaml:"slug"`
 	SelfService       bool        `yaml:"self_service"`
+	Categories        []string    `yaml:"categories"`
 	InstallScript     *rawPathRef `yaml:"install_script"`
 	UninstallScript   *rawPathRef `yaml:"uninstall_script"`
 	PreInstallQuery   *rawPathRef `yaml:"pre_install_query"`
@@ -249,8 +253,9 @@ type rawFleetApp struct {
 }
 
 type rawSoftwareRef struct {
-	Path        string `yaml:"path"`
-	SelfService *bool  `yaml:"self_service"`
+	Path        string   `yaml:"path"`
+	SelfService *bool    `yaml:"self_service"`
+	Categories  []string `yaml:"categories"`
 }
 
 // rawSoftwarePackage captures script path: refs inside a software package YAML file.
@@ -258,6 +263,7 @@ type rawSoftwarePackage struct {
 	URL               string      `yaml:"url"`
 	HashSHA256        string      `yaml:"hash_sha256"`
 	SelfService       bool        `yaml:"self_service"`
+	Categories        []string    `yaml:"categories"`
 	InstallScript     *rawPathRef `yaml:"install_script"`
 	UninstallScript   *rawPathRef `yaml:"uninstall_script"`
 	PreInstallQuery   *rawPathRef `yaml:"pre_install_query"`
@@ -490,6 +496,9 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			if ref.SelfService != nil {
 				pkgs[i].SelfService = *ref.SelfService
 			}
+			if ref.Categories != nil {
+				pkgs[i].Categories = ref.Categories
+			}
 			team.Software.Packages = append(team.Software.Packages, pkgs[i])
 		}
 	}
@@ -716,6 +725,7 @@ func resolveSoftwareRef(root, baseDir, refPath, parentFile string) ([]ParsedSoft
 			URL:         raw.URL,
 			HashSHA256:  raw.HashSHA256,
 			SelfService: raw.SelfService,
+			Categories:  raw.Categories,
 			SourceFile:  resolved,
 		}
 
@@ -747,6 +757,7 @@ func resolveFleetApp(root, baseDir string, raw rawFleetApp, parentFile string) (
 	fma := ParsedFleetApp{
 		Slug:        raw.Slug,
 		SelfService: raw.SelfService,
+		Categories:  raw.Categories,
 	}
 
 	readScript := func(ref *rawPathRef, label string) string {

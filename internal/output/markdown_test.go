@@ -324,6 +324,56 @@ func TestRenderDiffMarkdown(t *testing.T) {
 	}
 }
 
+func TestRenderDiffMarkdownCategories(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []diff.DiffResult
+		wantAll []string
+	}{
+		{
+			name: "added software with categories in Details not shown (added only shows host count)",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Software: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{
+						Name: "fleet app chrome/mac",
+						Fields: map[string]diff.FieldDiff{
+							"slug":       {New: "chrome/mac"},
+							"categories": {New: "[Browsers]", IsSlice: true, NewSlice: []string{"Browsers"}},
+						},
+					}},
+				},
+			}},
+			wantAll: []string{"ADDED", "fleet app chrome/mac"},
+		},
+		{
+			name: "modified software with categories change",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Software: diff.ResourceDiff{
+					Modified: []diff.ResourceChange{{
+						Name: "software/slack.yml",
+						Fields: map[string]diff.FieldDiff{
+							"categories": {
+								Old: "[Communication]", New: "[Communication, Productivity]",
+								IsSlice: true,
+							},
+						},
+					}},
+				},
+			}},
+			wantAll: []string{"MODIFIED", "software/slack.yml", "`categories`", "[Communication]", "[Communication, Productivity]"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := RenderDiffMarkdown(tt.results, MarkdownOptions{})
+			assertOutputContains(t, out, tt.wantAll)
+		})
+	}
+}
+
 func TestMdDiffContext(t *testing.T) {
 	tests := []struct {
 		name       string

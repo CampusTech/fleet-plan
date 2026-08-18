@@ -34,3 +34,10 @@ software:
       uninstall_script:
         path: ../software/windows/cursor/uninstall.ps1
       self_service: true
+      categories:
+        - Browsers
+  app_store_apps:
+    - app_store_id: "803453959"
+      self_service: true
+      categories:
+        - Productivity

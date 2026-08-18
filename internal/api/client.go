@@ -150,26 +150,29 @@ type TeamSoftware struct {
 }
 
 type TeamSoftwarePackage struct {
-	URL                string `json:"url"`
-	HashSHA256         string `json:"hash_sha256"`
-	SelfService        bool   `json:"self_service"`
-	ReferencedYAMLPath string `json:"referenced_yaml_path"`
+	URL                string   `json:"url"`
+	HashSHA256         string   `json:"hash_sha256"`
+	SelfService        bool     `json:"self_service"`
+	Categories         []string `json:"categories"`
+	ReferencedYAMLPath string   `json:"referenced_yaml_path"`
 }
 
 type TeamFleetApp struct {
-	Slug              string `json:"slug"`
-	SelfService       bool   `json:"self_service"`
-	TitleID           uint   `json:"-"` // software title ID, for fetching detail
-	TeamID            uint   `json:"-"`
-	InstallScript     string `json:"-"` // populated from title detail endpoint
-	UninstallScript   string `json:"-"`
-	PreInstallQuery   string `json:"-"`
-	PostInstallScript string `json:"-"`
+	Slug              string   `json:"slug"`
+	SelfService       bool     `json:"self_service"`
+	Categories        []string `json:"categories"`
+	TitleID           uint     `json:"-"` // software title ID, for fetching detail
+	TeamID            uint     `json:"-"`
+	InstallScript     string   `json:"-"` // populated from title detail endpoint
+	UninstallScript   string   `json:"-"`
+	PreInstallQuery   string   `json:"-"`
+	PostInstallScript string   `json:"-"`
 }
 
 type TeamAppStoreApp struct {
-	AppStoreID  string `json:"app_store_id"`
-	SelfService bool   `json:"self_service"`
+	AppStoreID  string   `json:"app_store_id"`
+	SelfService bool     `json:"self_service"`
+	Categories  []string `json:"categories"`
 }
 
 // FleetMaintainedApp is an entry from Fleet's maintained-app catalog.

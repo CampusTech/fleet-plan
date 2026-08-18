@@ -48,9 +48,10 @@ type JSONChange struct {
 }
 
 // JSONField is an old/new field value in JSON format.
+// Old/New are string for scalar fields or []string for slice fields (e.g. categories).
 type JSONField struct {
-	Old string `json:"old"`
-	New string `json:"new"`
+	Old any `json:"old"`
+	New any `json:"new"`
 }
 
 // JSONLabelResult is label validation in JSON format.
@@ -116,7 +117,18 @@ func convertChanges(changes []diff.ResourceChange) []JSONChange {
 		if len(c.Fields) > 0 {
 			jc.Fields = make(map[string]JSONField)
 			for k, v := range c.Fields {
-				jc.Fields[k] = JSONField{Old: v.Old, New: v.New}
+				if v.IsSlice {
+					var old, new any
+					if v.OldSlice != nil {
+						old = v.OldSlice
+					}
+					if v.NewSlice != nil {
+						new = v.NewSlice
+					}
+					jc.Fields[k] = JSONField{Old: old, New: new}
+				} else {
+					jc.Fields[k] = JSONField{Old: v.Old, New: v.New}
+				}
 			}
 		}
 		result = append(result, jc)

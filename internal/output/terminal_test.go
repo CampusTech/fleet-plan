@@ -210,6 +210,47 @@ func TestRenderDiffTerminal(t *testing.T) {
 	}
 }
 
+func TestRenderDiffTerminalCategories(t *testing.T) {
+	// Added fields only show in verbose mode; modified fields always show.
+	results := []diff.DiffResult{{
+		Team: "T",
+		Software: diff.ResourceDiff{
+			Added: []diff.ResourceChange{{
+				Name: "fleet app chrome/mac",
+				Fields: map[string]diff.FieldDiff{
+					"slug":         {New: "chrome/mac"},
+					"self_service": {New: "true"},
+					"categories":   {New: "[Browsers]", IsSlice: true, NewSlice: []string{"Browsers"}},
+				},
+			}},
+			Modified: []diff.ResourceChange{{
+				Name: "software/slack.yml",
+				Fields: map[string]diff.FieldDiff{
+					"categories": {Old: "[Communication]", New: "[Communication, Productivity]", IsSlice: true},
+				},
+			}},
+		},
+	}}
+
+	out := RenderDiffTerminal(results, true)
+	plain := stripANSI(out)
+
+	for _, want := range []string{"categories:", "[Browsers]", "[Communication]", "[Communication, Productivity]"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("expected %q in verbose output, got:\n%s", want, plain)
+		}
+	}
+
+	// In default mode, modified categories should still show (may be truncated)
+	outDefault := RenderDiffTerminal(results, false)
+	plainDefault := stripANSI(outDefault)
+	for _, want := range []string{"categories:", "[Communication]", "Productivity]"} {
+		if !strings.Contains(plainDefault, want) {
+			t.Errorf("expected %q in default output, got:\n%s", want, plainDefault)
+		}
+	}
+}
+
 // ---------- renderFieldLines ----------
 
 func TestRenderFieldLines(t *testing.T) {

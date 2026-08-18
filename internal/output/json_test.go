@@ -208,6 +208,104 @@ func TestRenderDiffJSONIsValidJSON(t *testing.T) {
 	}
 }
 
+func TestRenderDiffJSONCategories(t *testing.T) {
+	tests := []struct {
+		name  string
+		field diff.FieldDiff
+		check func(t *testing.T, raw string)
+	}{
+		{
+			name: "added categories renders as null old and array new",
+			field: diff.FieldDiff{
+				New: "[Communication]", IsSlice: true,
+				NewSlice: []string{"Communication"},
+			},
+			check: func(t *testing.T, raw string) {
+				if !strings.Contains(raw, `"old": null`) {
+					t.Errorf("expected null old, got:\n%s", raw)
+				}
+				if !strings.Contains(raw, `"Communication"`) {
+					t.Errorf("expected Communication in new, got:\n%s", raw)
+				}
+			},
+		},
+		{
+			name: "modified categories renders arrays for both",
+			field: diff.FieldDiff{
+				Old: "[Communication]", New: "[Communication, Productivity]", IsSlice: true,
+				OldSlice: []string{"Communication"}, NewSlice: []string{"Communication", "Productivity"},
+			},
+			check: func(t *testing.T, raw string) {
+				// Parse as generic JSON to check structure
+				var output JSONDiffOutput
+				if err := json.Unmarshal([]byte(raw), &output); err != nil {
+					t.Fatalf("invalid JSON: %v", err)
+				}
+				f := output.Teams[0].Software.Added[0].Fields["categories"]
+				// Old should be an array
+				if f.Old == nil {
+					t.Error("expected non-nil old")
+				}
+				if f.New == nil {
+					t.Error("expected non-nil new")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := []diff.DiffResult{{
+				Team: "T",
+				Software: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{
+						Name:   "app",
+						Fields: map[string]diff.FieldDiff{"categories": tt.field},
+					}},
+				},
+			}}
+			raw, err := RenderDiffJSON(results)
+			if err != nil {
+				t.Fatalf("RenderDiffJSON: %v", err)
+			}
+			if !json.Valid([]byte(raw)) {
+				t.Fatalf("invalid JSON:\n%s", raw)
+			}
+			tt.check(t, raw)
+		})
+	}
+}
+
+func TestRenderDiffJSONStringFieldsUnchanged(t *testing.T) {
+	// Verify that regular string fields still render as strings, not arrays.
+	results := []diff.DiffResult{{
+		Team: "T",
+		Queries: diff.ResourceDiff{
+			Modified: []diff.ResourceChange{{
+				Name:   "Q",
+				Fields: map[string]diff.FieldDiff{"interval": {Old: "3600", New: "7200"}},
+			}},
+		},
+	}}
+	raw, err := RenderDiffJSON(results)
+	if err != nil {
+		t.Fatalf("RenderDiffJSON: %v", err)
+	}
+	var output JSONDiffOutput
+	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	f := output.Teams[0].Queries.Modified[0].Fields["interval"]
+	// String fields should unmarshal as strings via any
+	oldStr, ok := f.Old.(string)
+	if !ok {
+		t.Errorf("expected string old, got %T", f.Old)
+	}
+	if oldStr != "3600" {
+		t.Errorf("old = %q, want 3600", oldStr)
+	}
+}
+
 func TestRenderDiffJSONSpecialCharsRoundtrip(t *testing.T) {
 	results := []diff.DiffResult{{
 		Team: "Team with \"quotes\" and <brackets>",

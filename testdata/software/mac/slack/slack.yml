@@ -1,3 +1,5 @@
 url: https://downloads.slack-edge.com/desktop-releases/macos/4.42.1/Slack-4.42.1-macOS.dmg
 hash_sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 self_service: true
+categories:
+  - Communication

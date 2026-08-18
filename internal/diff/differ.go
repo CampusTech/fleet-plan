@@ -70,8 +70,11 @@ type ResourceChange struct {
 
 // FieldDiff shows old vs new value for a single field.
 type FieldDiff struct {
-	Old string
-	New string
+	Old      string
+	New      string
+	OldSlice []string // non-nil for slice-typed fields (used by JSON renderer)
+	NewSlice []string // non-nil for slice-typed fields (used by JSON renderer)
+	IsSlice  bool     // true when OldSlice/NewSlice should be used for JSON output
 }
 
 // LabelValidation reports label cross-reference status.
@@ -725,6 +728,40 @@ func diffQueries(current []api.Query, proposed []parser.ParsedQuery) ResourceDif
 	return diff
 }
 
+// categoriesEqual compares two category slices as sets (order-independent).
+func categoriesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]struct{}, len(a))
+	for _, v := range a {
+		set[v] = struct{}{}
+	}
+	for _, v := range b {
+		if _, ok := set[v]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// sortedCategories returns a sorted copy of the slice.
+func sortedCategories(cats []string) []string {
+	cp := make([]string, len(cats))
+	copy(cp, cats)
+	sort.Strings(cp)
+	return cp
+}
+
+// formatCategories returns a sorted display string like "[Browsers, Communication]".
+func formatCategories(cats []string) string {
+	if len(cats) == 0 {
+		return "[]"
+	}
+	sorted := sortedCategories(cats)
+	return "[" + strings.Join(sorted, ", ") + "]"
+}
+
 // disambiguateSoftwareKeys returns a collision-free diff key for each package.
 // base[i] is a package's primary identity: its referenced YAML file path,
 // which is how Fleet identifies an installer. Most files define exactly one
@@ -813,6 +850,12 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 			if p.HashSHA256 != "" {
 				fields["hash_sha256"] = FieldDiff{New: p.HashSHA256}
 			}
+			if len(p.Categories) > 0 {
+				fields["categories"] = FieldDiff{
+					New: formatCategories(p.Categories), IsSlice: true,
+					NewSlice: sortedCategories(p.Categories),
+				}
+			}
 			rd.Added = append(rd.Added, ResourceChange{Name: proposedNames[key], Fields: fields})
 			continue
 		}
@@ -825,6 +868,12 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 		}
 		if cur.SelfService != p.SelfService {
 			fields["self_service"] = FieldDiff{Old: fmt.Sprint(cur.SelfService), New: fmt.Sprint(p.SelfService)}
+		}
+		if !categoriesEqual(cur.Categories, p.Categories) {
+			fields["categories"] = FieldDiff{
+				Old: formatCategories(cur.Categories), New: formatCategories(p.Categories),
+				IsSlice: true, OldSlice: sortedCategories(cur.Categories), NewSlice: sortedCategories(p.Categories),
+			}
 		}
 		if len(fields) > 0 {
 			rd.Modified = append(rd.Modified, ResourceChange{
@@ -858,12 +907,19 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 	for slug, a := range proposedFleet {
 		cur, exists := currentFleet[slug]
 		if !exists {
+			addedFields := map[string]FieldDiff{
+				"slug":         {New: a.Slug},
+				"self_service": {New: fmt.Sprint(a.SelfService)},
+			}
+			if len(a.Categories) > 0 {
+				addedFields["categories"] = FieldDiff{
+					New: formatCategories(a.Categories), IsSlice: true,
+					NewSlice: sortedCategories(a.Categories),
+				}
+			}
 			rd.Added = append(rd.Added, ResourceChange{
-				Name: "fleet app " + slug,
-				Fields: map[string]FieldDiff{
-					"slug":         {New: a.Slug},
-					"self_service": {New: fmt.Sprint(a.SelfService)},
-				},
+				Name:   "fleet app " + slug,
+				Fields: addedFields,
 			})
 			continue
 		}
@@ -872,6 +928,12 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 			fields["self_service"] = FieldDiff{
 				Old: fmt.Sprint(cur.SelfService),
 				New: fmt.Sprint(a.SelfService),
+			}
+		}
+		if !categoriesEqual(cur.Categories, a.Categories) {
+			fields["categories"] = FieldDiff{
+				Old: formatCategories(cur.Categories), New: formatCategories(a.Categories),
+				IsSlice: true, OldSlice: sortedCategories(cur.Categories), NewSlice: sortedCategories(a.Categories),
 			}
 		}
 		for _, sc := range []struct {
@@ -923,24 +985,39 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 	for id, a := range proposedApps {
 		cur, exists := currentApps[id]
 		if !exists {
+			addedFields := map[string]FieldDiff{
+				"app_store_id": {New: a.AppStoreID},
+				"self_service": {New: fmt.Sprint(a.SelfService)},
+			}
+			if len(a.Categories) > 0 {
+				addedFields["categories"] = FieldDiff{
+					New: formatCategories(a.Categories), IsSlice: true,
+					NewSlice: sortedCategories(a.Categories),
+				}
+			}
 			rd.Added = append(rd.Added, ResourceChange{
-				Name: "app store app " + id,
-				Fields: map[string]FieldDiff{
-					"app_store_id": {New: a.AppStoreID},
-					"self_service": {New: fmt.Sprint(a.SelfService)},
-				},
+				Name:   "app store app " + id,
+				Fields: addedFields,
 			})
 			continue
 		}
+		fields := make(map[string]FieldDiff)
 		if cur.SelfService != a.SelfService {
+			fields["self_service"] = FieldDiff{
+				Old: fmt.Sprint(cur.SelfService),
+				New: fmt.Sprint(a.SelfService),
+			}
+		}
+		if !categoriesEqual(cur.Categories, a.Categories) {
+			fields["categories"] = FieldDiff{
+				Old: formatCategories(cur.Categories), New: formatCategories(a.Categories),
+				IsSlice: true, OldSlice: sortedCategories(cur.Categories), NewSlice: sortedCategories(a.Categories),
+			}
+		}
+		if len(fields) > 0 {
 			rd.Modified = append(rd.Modified, ResourceChange{
-				Name: "app store app " + id,
-				Fields: map[string]FieldDiff{
-					"self_service": {
-						Old: fmt.Sprint(cur.SelfService),
-						New: fmt.Sprint(a.SelfService),
-					},
-				},
+				Name:   "app store app " + id,
+				Fields: fields,
 			})
 		}
 	}
