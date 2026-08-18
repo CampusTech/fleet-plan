@@ -326,10 +326,15 @@ func MatchesAnyTeam(name string, filters []string) bool {
 	return false
 }
 
-// decodeSettingsNode decodes the first non-empty settings node into a nested
-// map. Callers pass `settings:` before `team_settings:` so the modern spelling
-// wins when a file carries both. Returns nil when neither is set or the node
-// is not a mapping, which callers treat as "nothing to diff".
+// decodeSettingsNode decodes the first settings node that declares a mapping.
+// Callers pass `settings:` before `team_settings:` so the modern spelling wins
+// when a file carries both -- including when it is written as an explicit
+// empty mapping, which declares "this team configures no settings" and must
+// not silently fall back to the legacy key.
+//
+// A key present but null (`settings:` with no value) declares nothing, so the
+// next node is tried. Returns nil when no node declares a mapping, which
+// callers treat as "nothing to diff".
 func decodeSettingsNode(nodes ...yaml.Node) map[string]any {
 	for _, n := range nodes {
 		if n.IsZero() {
@@ -339,9 +344,15 @@ func decodeSettingsNode(nodes ...yaml.Node) map[string]any {
 		if err := n.Decode(&m); err != nil {
 			continue
 		}
-		if len(m) > 0 {
-			return m
+		if m == nil {
+			continue
 		}
+		if len(m) == 0 {
+			// An explicit empty mapping declares "no settings": it wins over
+			// the legacy key, and there is nothing to diff.
+			return nil
+		}
+		return m
 	}
 	return nil
 }

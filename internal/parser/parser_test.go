@@ -1184,6 +1184,31 @@ team_settings:
 			yaml:    "name: T\nsettings: {}\n",
 			wantNil: true,
 		},
+		{
+			// An explicit empty mapping is a declaration ("no settings"), so
+			// it wins over the legacy key just like a populated one would.
+			name: "empty settings beats team_settings",
+			yaml: `name: T
+settings: {}
+team_settings:
+  features:
+    enable_software_inventory: true
+`,
+			wantNil: true,
+		},
+		{
+			// A key with no value declares nothing, so the legacy key is used.
+			name: "null settings falls through to team_settings",
+			yaml: `name: T
+settings:
+team_settings:
+  features:
+    enable_software_inventory: true
+`,
+			want: map[string]any{
+				"features": map[string]any{"enable_software_inventory": true},
+			},
+		},
 	}
 
 	for _, tt := range tests {
