@@ -17,10 +17,11 @@ import (
 	"github.com/TsekNet/fleet-plan/internal/api"
 	"github.com/TsekNet/fleet-plan/internal/config"
 	"github.com/TsekNet/fleet-plan/internal/diff"
-	"github.com/TsekNet/fleet-plan/internal/merge"
 	"github.com/TsekNet/fleet-plan/internal/git"
+	"github.com/TsekNet/fleet-plan/internal/merge"
 	"github.com/TsekNet/fleet-plan/internal/output"
 	"github.com/TsekNet/fleet-plan/internal/parser"
+	"github.com/TsekNet/fleet-plan/internal/teamdir"
 )
 
 // Set via -ldflags at build time.
@@ -132,10 +133,11 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(repo.Teams) == 0 && len(repo.Errors) == 0 {
+		dirName := teamdir.Resolve(flagRepo)
 		if len(teams) > 0 {
-			return fmt.Errorf("no teams matching %v found in %s/teams/", teams, flagRepo)
+			return fmt.Errorf("no teams matching %v found in %s/%s/", teams, flagRepo, dirName)
 		}
-		return fmt.Errorf("no teams found in %s/teams/\nAre you in a fleet-gitops repo? Try --repo /path/to/repo", flagRepo)
+		return fmt.Errorf("no teams found in %s/%s/\nAre you in a fleet-gitops repo? Try --repo /path/to/repo", flagRepo, dirName)
 	}
 
 	// Parse baseline (base branch) for subtraction when in --git mode.

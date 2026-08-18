@@ -354,6 +354,78 @@ func TestDiffNewTeam(t *testing.T) {
 	}
 }
 
+// The no-team bucket is absent from GET /teams by design, in both the teams/
+// layout ("No team") and the fleets/ layout ("Unassigned"). Neither may be
+// reported as a team that will be created, and neither may have its resources
+// listed as additions -- but the plan must still say what's configured for it.
+func TestDiffNoTeamIsNotANewTeam(t *testing.T) {
+	tests := []struct {
+		name        string
+		team        parser.ParsedTeam
+		wantSummary string
+	}{
+		{
+			name: "teams layout",
+			team: parser.ParsedTeam{
+				Name:       "No team",
+				SourceFile: "teams/no-team.yml",
+				Policies:   []parser.ParsedPolicy{{Name: "P1"}},
+			},
+			wantSummary: "1 policy",
+		},
+		{
+			name: "fleets layout",
+			team: parser.ParsedTeam{
+				Name:       "Unassigned",
+				SourceFile: "fleets/unassigned.yml",
+				Policies:   []parser.ParsedPolicy{{Name: "P1"}, {Name: "P2"}},
+				Scripts:    []parser.ParsedScript{{Name: "a.sh"}, {Name: "b.ps1"}},
+			},
+			wantSummary: "2 policies, 2 scripts",
+		},
+		{
+			name: "fleets layout, unrecognized name key",
+			team: parser.ParsedTeam{
+				Name:       "hosts with no team",
+				SourceFile: "fleets/unassigned.yml",
+				Queries:    []parser.ParsedQuery{{Name: "Q1"}},
+			},
+			wantSummary: "1 query",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current := &api.FleetState{Teams: []api.Team{}, Labels: []api.Label{}}
+			proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{tt.team}}
+
+			results := Diff(current, proposed, nil, nil)
+			if len(results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(results))
+			}
+			r := results[0]
+
+			if len(r.Policies.Added) != 0 || len(r.Queries.Added) != 0 {
+				t.Errorf("no-team resources listed as additions: %d policies, %d queries",
+					len(r.Policies.Added), len(r.Queries.Added))
+			}
+
+			var summary string
+			for _, e := range r.Errors {
+				if strings.Contains(e, "does not exist in Fleet yet") {
+					t.Errorf("no-team reported as a new team: %q", e)
+				}
+				if strings.Contains(e, "no API diff available") {
+					summary = e
+				}
+			}
+			if !strings.HasPrefix(summary, tt.wantSummary+" configured") {
+				t.Errorf("summary: got %q, want prefix %q", summary, tt.wantSummary+" configured")
+			}
+		})
+	}
+}
+
 func TestDiffTeamFilter(t *testing.T) {
 	current := &api.FleetState{
 		Teams: []api.Team{{ID: 1, Name: "Alpha"}, {ID: 2, Name: "Beta"}},
@@ -643,6 +715,62 @@ func TestDiffSoftwarePackageModified(t *testing.T) {
 	}
 	if _, ok := mod.Fields["self_service"]; !ok {
 		t.Fatal("expected self_service field diff")
+	}
+}
+
+// TestDiffSoftwareMultiPackageSharedFile verifies that when a single list-form
+// package file yields multiple packages (all sharing one referenced YAML path),
+// the diff surfaces each package instead of collapsing them by the shared path
+// key. Both sides carry two packages under the same path; the URL discriminator
+// keeps them distinct so an unchanged pair produces no spurious add/delete, and
+// a single changed package is reported on its own.
+func TestDiffSoftwareMultiPackageSharedFile(t *testing.T) {
+	const sharedPath = "software/windows/multi/multi.yml"
+
+	current := &api.FleetState{
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "Workstations",
+				Software: api.TeamSoftware{
+					Packages: []api.TeamSoftwarePackage{
+						{ReferencedYAMLPath: sharedPath, URL: "https://example.com/app-one.exe", SelfService: false},
+						{ReferencedYAMLPath: sharedPath, URL: "https://example.com/app-two.exe"},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "Workstations",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						// app-one flips self_service (modified); app-two unchanged.
+						{RefPath: sharedPath, URL: "https://example.com/app-one.exe", SelfService: true},
+						{RefPath: sharedPath, URL: "https://example.com/app-two.exe"},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	r := results[0]
+
+	if len(r.Software.Added) != 0 {
+		t.Fatalf("expected 0 added packages, got %d: %+v", len(r.Software.Added), r.Software.Added)
+	}
+	if len(r.Software.Deleted) != 0 {
+		t.Fatalf("expected 0 deleted packages, got %d: %+v", len(r.Software.Deleted), r.Software.Deleted)
+	}
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified package (app-one self_service), got %d: %+v", len(r.Software.Modified), r.Software.Modified)
+	}
+	if _, ok := r.Software.Modified[0].Fields["self_service"]; !ok {
+		t.Fatalf("expected self_service field diff on the changed package, got %+v", r.Software.Modified[0].Fields)
 	}
 }
 

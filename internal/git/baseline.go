@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/TsekNet/fleet-plan/internal/teamdir"
 )
 
 // CheckoutBaseline extracts the base-branch versions of the given files into a
@@ -26,20 +28,32 @@ func CheckoutBaseline(repoRoot string, baseRef string, files []string) (tmpRoot 
 	}
 	cleanup = func() { os.RemoveAll(tmpRoot) }
 
-	// Ensure teams/ directory exists so ParseRepo doesn't bail early.
-	os.MkdirAll(filepath.Join(tmpRoot, "teams"), 0o755)
-
 	// Resolve which files we need: the explicitly changed files, plus any
 	// files they reference (path: directives in team YAML). We start with
 	// the team files themselves, then do a second pass for references.
 	needed := collectBaselineFiles(repoRoot, baseRef, files)
 
 	var extracted int
+	var baseLayout string
 	for _, f := range needed {
 		content, err := gitShow(repoRoot, baseRef, f)
 		if err != nil {
 			// File doesn't exist at base ref (newly added), skip.
 			continue
+		}
+
+		// Record the team directory the base ref actually uses, inferred
+		// from the files that exist at the base ref. This must not be taken
+		// from repoRoot: if the current worktree migrated teams/ -> fleets/,
+		// pre-creating the worktree's layout would mask the base ref's legacy
+		// team files and make baseline parsing ignore them.
+		if baseLayout == "" {
+			for _, name := range teamdir.Names() {
+				if strings.HasPrefix(f, name+"/") {
+					baseLayout = name
+					break
+				}
+			}
 		}
 
 		dst := filepath.Join(tmpRoot, f)
@@ -57,6 +71,15 @@ func CheckoutBaseline(repoRoot string, baseRef string, files []string) (tmpRoot 
 	if extracted == 0 {
 		cleanup()
 		return "", nil, fmt.Errorf("no baseline files could be extracted")
+	}
+
+	// Ensure the base ref's team directory exists so teamdir.Resolve picks the
+	// same layout the base ref used rather than falling back to the preferred
+	// name. Writing an extracted team file already creates this dir; the
+	// explicit MkdirAll only matters when the base layout was detected but is
+	// otherwise empty.
+	if baseLayout != "" {
+		os.MkdirAll(filepath.Join(tmpRoot, baseLayout), 0o755)
 	}
 
 	return tmpRoot, cleanup, nil
@@ -84,7 +107,7 @@ func collectBaselineFiles(repoRoot, baseRef string, changedFiles []string) []str
 	// references. Also extract any referenced resource files so the parser can
 	// resolve them.
 	for _, f := range changedFiles {
-		if !strings.HasPrefix(f, "teams/") && f != "base.yml" && f != "default.yml" {
+		if !teamdir.HasPrefix(f) && f != "base.yml" && f != "default.yml" {
 			continue
 		}
 		content, err := gitShow(repoRoot, baseRef, f)

@@ -260,8 +260,10 @@ func TestExtractProfileNameFallback(t *testing.T) {
 }
 
 // TestExtractMobileconfigName verifies PayloadDisplayName extraction from plist XML.
-// Fleet uses the top-level PayloadDisplayName (the last occurrence in the file)
-// as the profile identity, not the nested ones inside PayloadContent.
+// Fleet uses the top-level PayloadDisplayName (the one at the root dict, depth 1)
+// as the profile identity, not the nested ones inside PayloadContent. Position
+// within the file is not meaningful — different profile generators emit the
+// top-level PayloadDisplayName before or after PayloadContent.
 func TestExtractMobileconfigName(t *testing.T) {
 	// Top-level PayloadDisplayName after PayloadContent array — should return
 	// the top-level one (last occurrence), not the inner one.
@@ -323,6 +325,33 @@ func TestExtractMobileconfigName(t *testing.T) {
 		t.Errorf("expected %q, got %q", "Simple Profile", name)
 	}
 
+	// Top-level PayloadDisplayName BEFORE PayloadContent — the order Apple
+	// Configurator emits and what most hand-edited profiles look like.
+	// Earlier extractor used the last occurrence and would have returned
+	// the deepest nested name; now we require depth=1.
+	topFirst := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadDisplayName</key>
+	<string>Zoom Room Activation Code — University of Pennsylvania (Room2)</string>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Zoom Room Activation Code</string>
+		</dict>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Zoom Room Activation Code (Mac)</string>
+		</dict>
+	</array>
+</dict>
+</plist>`
+	name = extractMobileconfigName([]byte(topFirst))
+	if name != "Zoom Room Activation Code — University of Pennsylvania (Room2)" {
+		t.Errorf("top-first ordering: expected the outer PayloadDisplayName, got %q", name)
+	}
+
 	// No PayloadDisplayName at all
 	empty := `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -334,6 +363,46 @@ func TestExtractMobileconfigName(t *testing.T) {
 	name = extractMobileconfigName([]byte(empty))
 	if name != "" {
 		t.Errorf("expected empty string, got %q", name)
+	}
+
+	// XML entities in the top-level PayloadDisplayName must be decoded so the
+	// name matches the value Fleet reports (identity would mismatch otherwise).
+	entities := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadDisplayName</key>
+	<string>VPN &amp; Wi-Fi &lt;Corp&gt;</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+</dict>
+</plist>`
+	name = extractMobileconfigName([]byte(entities))
+	if name != "VPN & Wi-Fi <Corp>" {
+		t.Errorf("expected decoded entities, got %q", name)
+	}
+}
+
+func TestInferApplePlatform(t *testing.T) {
+	tests := []struct {
+		refPath string
+		want    string
+	}{
+		{"lib/macos/profiles/foo.mobileconfig", "darwin"},
+		{"lib/ios/profiles/foo.mobileconfig", "ios"},
+		{"lib/ipados/profiles/foo.mobileconfig", "ipados"},
+		// Root-level relative paths without a leading slash.
+		{"ios/profile.mobileconfig", "ios"},
+		{"ipados/profile.mobileconfig", "ipados"},
+		// Case-insensitive.
+		{"lib/iOS/profile.mobileconfig", "ios"},
+		// Platform token only counts as a whole path component.
+		{"lib/macos/ios-helper.mobileconfig", "darwin"},
+		{"profiles/foo.mobileconfig", "darwin"},
+	}
+	for _, tt := range tests {
+		if got := inferApplePlatform(tt.refPath); got != tt.want {
+			t.Errorf("inferApplePlatform(%q) = %q, want %q", tt.refPath, got, tt.want)
+		}
 	}
 }
 
@@ -420,8 +489,8 @@ team_settings: {}
 		},
 		{
 			name:       "missing teams directory",
-			wantErrMsg: "teams",
-			setup:      func(root string) {}, // empty dir, no teams/
+			wantErrMsg: "directory not found",
+			setup:      func(root string) {}, // empty dir, no fleets/ or teams/
 		},
 		{
 			name:       "missing name field",
@@ -624,5 +693,420 @@ team_settings: {}
 	}
 	if !foundDupErr {
 		t.Fatalf("expected duplicate software package error, got: %+v", repo.Errors)
+	}
+}
+
+// TestParseRepoFleetsDir verifies the new canonical directory name (fleets/)
+// produced by Fleet's `fleetctl new` since the teams->fleets migration.
+func TestParseRepoFleetsDir(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: Workstations
+policies: []
+queries: []
+software:
+  packages: []
+team_settings: {}
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "workstations.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team from fleets/, got %d (errors: %v)", len(repo.Teams), repo.Errors)
+	}
+	if repo.Teams[0].Name != "Workstations" {
+		t.Errorf("team name = %q, want %q", repo.Teams[0].Name, "Workstations")
+	}
+}
+
+// TestParseRepoFleetsTakesPriorityOverTeams verifies fleets/ wins when both
+// directories exist (defensive behavior for repos mid-migration).
+func TestParseRepoFleetsTakesPriorityOverTeams(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	teamsDir := filepath.Join(root, "teams")
+	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(teamsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(dir, name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(fleetsDir, "ws.yml", "name: FromFleets\npolicies: []\nqueries: []\nsoftware:\n  packages: []\nteam_settings: {}\n")
+	write(teamsDir, "ws.yml", "name: FromTeams\npolicies: []\nqueries: []\nsoftware:\n  packages: []\nteam_settings: {}\n")
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Teams) != 1 || repo.Teams[0].Name != "FromFleets" {
+		t.Fatalf("expected single team named FromFleets, got %d teams: %+v", len(repo.Teams), repo.Teams)
+	}
+}
+
+// TestParseRepoAppleSettings exercises controls.apple_settings.configuration_profiles,
+// the modern unified block that replaced macos_settings.custom_settings. Each
+// referenced file should produce a ParsedProfile with platform inferred from
+// the path (macos/ → darwin, ipados/ → ipados, ios/ → ios).
+func TestParseRepoAppleSettings(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	macosDir := filepath.Join(root, "lib", "macos", "profiles")
+	ipadosDir := filepath.Join(root, "lib", "ipados", "profiles")
+	iosDir := filepath.Join(root, "lib", "ios", "profiles")
+	for _, d := range []string{fleetsDir, macosDir, ipadosDir, iosDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// .mobileconfig with a PayloadDisplayName so extractProfileName succeeds.
+	mobileconfig := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadDisplayName</key>
+  <string>Mac Energy Saver</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+</dict>
+</plist>
+`
+	if err := os.WriteFile(filepath.Join(macosDir, "energy.mobileconfig"), []byte(mobileconfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// DDM .json — name comes from filename.
+	if err := os.WriteFile(filepath.Join(ipadosDir, "ipad-force-os.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(iosDir, "ios-restrictions.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	teamYAML := `name: Mixed Apple
+controls:
+  apple_settings:
+    configuration_profiles:
+      - path: ../lib/macos/profiles/energy.mobileconfig
+        labels_include_any: [mac-fleet]
+      - path: ../lib/ipados/profiles/ipad-force-os.json
+        labels_include_any: [ipad-fleet]
+      - path: ../lib/ios/profiles/ios-restrictions.json
+team_settings: {}
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "mixed.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	got := map[string]string{}
+	for _, p := range repo.Teams[0].Profiles {
+		got[p.Name] = p.Platform
+	}
+	want := map[string]string{
+		"Mac Energy Saver": "darwin",
+		"ipad-force-os":    "ipados",
+		"ios-restrictions": "ios",
+	}
+	for name, plat := range want {
+		if got[name] != plat {
+			t.Errorf("profile %q: platform = %q, want %q (full map: %v)", name, got[name], plat, got)
+		}
+	}
+}
+
+// TestParseRepoAcceptsSettingsKey covers the top-level `settings:` block,
+// which current Fleet GitOps yaml includes but fleet-plan originally
+// rejected as unknown. It is parsed opaquely (no field-level diff yet).
+func TestParseRepoAcceptsSettingsKey(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: T1
+team_settings: {}
+settings:
+  host_expiry_settings:
+    host_expiry_enabled: false
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "t1.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	for _, e := range repo.Errors {
+		if strings.Contains(e.Message, "unknown top-level key") {
+			t.Errorf("unexpected unknown-key error: %v", e)
+		}
+	}
+}
+
+// TestParseRepoReportsAliasesQueries verifies that `reports:` (the renamed
+// `queries:` from fleetdm/fleet#40726) is parsed as path refs and merged
+// into the team's query list. Without this, queries defined under `reports:`
+// don't appear on the proposed side and Fleet's live queries get reported
+// as REMOVED.
+func TestParseRepoReportsAliasesQueries(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	queriesDir := filepath.Join(root, "lib", "queries")
+	for _, d := range []string{fleetsDir, queriesDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A query file in the standard Fleet GitOps list-of-queries format.
+	queryYAML := `- name: My Report Query
+  query: SELECT 1;
+  platform: darwin
+`
+	if err := os.WriteFile(filepath.Join(queriesDir, "rpt.yml"), []byte(queryYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: T1
+team_settings: {}
+reports:
+  - path: ../lib/queries/rpt.yml
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "t1.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	if len(repo.Teams[0].Queries) != 1 || repo.Teams[0].Queries[0].Name != "My Report Query" {
+		t.Errorf("expected 1 query named %q from reports:, got %+v", "My Report Query", repo.Teams[0].Queries)
+	}
+}
+
+// TestParseRepoWindowsConfigurationProfiles verifies that
+// controls.windows_settings.configuration_profiles is parsed. This is the
+// modern key (mirroring apple_settings.configuration_profiles) that fleetctl
+// gitops accepts alongside the older windows_settings.custom_settings. Without
+// it, Windows profiles defined under configuration_profiles never appear on the
+// proposed side and every matching live Fleet profile is reported as REMOVED.
+func TestParseRepoWindowsConfigurationProfiles(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	winDir := filepath.Join(root, "lib", "windows", "configuration-profiles")
+	for _, d := range []string{fleetsDir, winDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Windows .xml profile — Fleet identifies it by filename, not content.
+	if err := os.WriteFile(filepath.Join(winDir, "campus-wifi-8021x.xml"), []byte(`<Replace></Replace>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Label-scoped entry to mirror the real-world pilot config.
+	teamYAML := `name: T1
+team_settings: {}
+controls:
+  windows_settings:
+    configuration_profiles:
+      - path: ../lib/windows/configuration-profiles/campus-wifi-8021x.xml
+        labels_include_any:
+          - test-pilots
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "t1.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	var got []string
+	for _, p := range repo.Teams[0].Profiles {
+		got = append(got, p.Name+"|"+p.Platform)
+	}
+	want := "campus-wifi-8021x|windows"
+	found := false
+	for _, g := range got {
+		if g == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("windows_settings.configuration_profiles not parsed: want %q in %v", want, got)
+	}
+}
+
+// TestParseSoftwarePackageListForm verifies that a package YAML file written as
+// a single-element list (- url: ...) parses identically to the single-object
+// form (url: ...). fleetctl gitops accepts both, but resolveSoftwareRef
+// originally only unmarshaled the object form; the list form failed to parse,
+// dropping the package from the proposed side and reporting it as REMOVED.
+func TestParseSoftwarePackageListForm(t *testing.T) {
+	root := t.TempDir()
+	teamsDir := filepath.Join(root, "teams")
+	softwareDir := filepath.Join(root, "software", "windows", "list-app")
+	if err := os.MkdirAll(teamsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(softwareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// List form: a one-element YAML sequence rather than a top-level map.
+	pkgYAML := `- url: https://downloads.example.com/list-app.exe
+  display_name: List App
+  self_service: true
+`
+	if err := os.WriteFile(filepath.Join(softwareDir, "list-app.yml"), []byte(pkgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: Workstations
+team_settings: {}
+software:
+  packages:
+    - path: ../software/windows/list-app/list-app.yml
+      labels_include_any:
+        - test-pilots
+`
+	if err := os.WriteFile(filepath.Join(teamsDir, "workstations.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	pkgs := repo.Teams[0].Software.Packages
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package from list-form file, got %d: %+v", len(pkgs), pkgs)
+	}
+	if pkgs[0].URL != "https://downloads.example.com/list-app.exe" {
+		t.Errorf("package URL = %q, want list-app.exe URL", pkgs[0].URL)
+	}
+	if !pkgs[0].SelfService {
+		t.Errorf("self_service from list-form package not parsed (want true)")
+	}
+}
+
+// TestParseSoftwarePackageMultiItemListForm verifies that a package YAML file
+// written as a multi-element list yields one package per entry. Keeping only
+// the first entry (list[0]) would silently drop later packages and report them
+// as REMOVED.
+func TestParseSoftwarePackageMultiItemListForm(t *testing.T) {
+	root := t.TempDir()
+	teamsDir := filepath.Join(root, "teams")
+	softwareDir := filepath.Join(root, "software", "windows", "multi-app")
+	if err := os.MkdirAll(teamsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(softwareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Two-element YAML sequence in a single package file.
+	pkgYAML := `- url: https://downloads.example.com/app-one.exe
+  display_name: App One
+  self_service: true
+- url: https://downloads.example.com/app-two.exe
+  display_name: App Two
+`
+	if err := os.WriteFile(filepath.Join(softwareDir, "multi-app.yml"), []byte(pkgYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: Workstations
+team_settings: {}
+software:
+  packages:
+    - path: ../software/windows/multi-app/multi-app.yml
+`
+	if err := os.WriteFile(filepath.Join(teamsDir, "workstations.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", repo.Errors)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+	pkgs := repo.Teams[0].Software.Packages
+	if len(pkgs) != 2 {
+		t.Fatalf("expected 2 packages from multi-item list file, got %d: %+v", len(pkgs), pkgs)
+	}
+	gotURLs := map[string]bool{}
+	for _, p := range pkgs {
+		gotURLs[p.URL] = true
+	}
+	for _, want := range []string{
+		"https://downloads.example.com/app-one.exe",
+		"https://downloads.example.com/app-two.exe",
+	} {
+		if !gotURLs[want] {
+			t.Errorf("missing package URL %q; got %v", want, gotURLs)
+		}
+	}
+}
+
+func TestIsNoTeam(t *testing.T) {
+	tests := []struct {
+		name       string
+		teamName   string
+		sourceFile string
+		want       bool
+	}{
+		{"teams layout name", "No team", "teams/no-team.yml", true},
+		{"teams layout name, lowercase", "no team", "teams/no-team.yml", true},
+		{"fleets layout name", "Unassigned", "fleets/unassigned.yml", true},
+		{"filename fallback", "hosts with no team", "fleets/unassigned.yml", true},
+		{"filename fallback, teams layout", "whatever", "teams/no-team.yml", true},
+		{"real team", "💻 Workstations", "fleets/workstations.yml", false},
+		{"team merely mentioning unassigned", "Unassigned Laptops", "fleets/spares.yml", false},
+		{"no source file", "Engineering", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsNoTeam(tt.teamName, tt.sourceFile); got != tt.want {
+				t.Errorf("IsNoTeam(%q, %q) = %v, want %v", tt.teamName, tt.sourceFile, got, tt.want)
+			}
+		})
 	}
 }
