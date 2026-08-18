@@ -5,6 +5,7 @@ package parser
 
 import (
 	"fmt"
+	"html"
 	"os"
 	"path"
 	"path/filepath"
@@ -602,14 +603,18 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 // is the embedded profile name, not platform — this is purely for display.
 func inferApplePlatform(refPath string) string {
 	clean := strings.ToLower(filepath.ToSlash(filepath.Clean(refPath)))
-	switch {
-	case strings.Contains(clean, "/ipados/"):
-		return "ipados"
-	case strings.Contains(clean, "/ios/"):
-		return "ios"
-	default:
-		return "darwin"
+	// Match ios/ipados as complete path components so a root-level relative
+	// path (e.g. "ios/profile.mobileconfig", with no leading slash) is still
+	// classified correctly rather than falling through to darwin.
+	for _, component := range strings.Split(clean, "/") {
+		switch component {
+		case "ipados":
+			return "ipados"
+		case "ios":
+			return "ios"
+		}
 	}
+	return "darwin"
 }
 
 // readYAMLRef resolves a path: reference, validates it stays within the repo
@@ -1021,7 +1026,9 @@ func extractMobileconfigName(data []byte) string {
 			if strings.HasPrefix(after, "<string>") {
 				after = after[len("<string>"):]
 				if end := strings.Index(after, "</string>"); end >= 0 {
-					return strings.TrimSpace(after[:end])
+					// Decode XML entities so a name like "VPN &amp; Wi-Fi"
+					// yields "VPN & Wi-Fi", matching the identity Fleet reports.
+					return html.UnescapeString(strings.TrimSpace(after[:end]))
 				}
 			}
 		}

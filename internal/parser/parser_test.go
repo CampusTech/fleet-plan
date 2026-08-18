@@ -364,6 +364,46 @@ func TestExtractMobileconfigName(t *testing.T) {
 	if name != "" {
 		t.Errorf("expected empty string, got %q", name)
 	}
+
+	// XML entities in the top-level PayloadDisplayName must be decoded so the
+	// name matches the value Fleet reports (identity would mismatch otherwise).
+	entities := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadDisplayName</key>
+	<string>VPN &amp; Wi-Fi &lt;Corp&gt;</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+</dict>
+</plist>`
+	name = extractMobileconfigName([]byte(entities))
+	if name != "VPN & Wi-Fi <Corp>" {
+		t.Errorf("expected decoded entities, got %q", name)
+	}
+}
+
+func TestInferApplePlatform(t *testing.T) {
+	tests := []struct {
+		refPath string
+		want    string
+	}{
+		{"lib/macos/profiles/foo.mobileconfig", "darwin"},
+		{"lib/ios/profiles/foo.mobileconfig", "ios"},
+		{"lib/ipados/profiles/foo.mobileconfig", "ipados"},
+		// Root-level relative paths without a leading slash.
+		{"ios/profile.mobileconfig", "ios"},
+		{"ipados/profile.mobileconfig", "ipados"},
+		// Case-insensitive.
+		{"lib/iOS/profile.mobileconfig", "ios"},
+		// Platform token only counts as a whole path component.
+		{"lib/macos/ios-helper.mobileconfig", "darwin"},
+		{"profiles/foo.mobileconfig", "darwin"},
+	}
+	for _, tt := range tests {
+		if got := inferApplePlatform(tt.refPath); got != tt.want {
+			t.Errorf("inferApplePlatform(%q) = %q, want %q", tt.refPath, got, tt.want)
+		}
+	}
 }
 
 // TestExtractProfileNameUsesFilenameForNonMobileconfig verifies that .json and
