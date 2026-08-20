@@ -1451,3 +1451,29 @@ func TestGetProfileContentOversized(t *testing.T) {
 		t.Errorf("error should say the profile is too large: %v", err)
 	}
 }
+
+func TestEnrichFleetAppScriptsPopulatesCategories(t *testing.T) {
+	// The team endpoint returns fleet_maintained_apps: [] for GitOps-managed
+	// teams, so categories are only available here, on the title detail. Not
+	// reading them made every app report "categories: [] → [X]" on every run.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"software_title":{"id":308,"name":"Google Chrome","software_package":{
+			"install_script":"echo install",
+			"uninstall_script":"echo uninstall",
+			"self_service":true,
+			"platform":"darwin",
+			"categories":["🌎 Browsers","🖥️ Productivity"]
+		}}}`)
+	}))
+	defer ts.Close()
+
+	apps := []TeamFleetApp{{Slug: "google-chrome/darwin", TitleID: 308, TeamID: 6}}
+	testClient(t, ts, "tok").EnrichFleetAppScripts(context.Background(), apps)
+
+	if apps[0].InstallScript != "echo install" {
+		t.Errorf("install script: got %q", apps[0].InstallScript)
+	}
+	if strings.Join(apps[0].Categories, ",") != "🌎 Browsers,🖥️ Productivity" {
+		t.Errorf("categories: got %v, want the values from the title detail", apps[0].Categories)
+	}
+}

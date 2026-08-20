@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/CampusTech/fleet-plan/internal/api"
 	"github.com/CampusTech/fleet-plan/internal/parser"
@@ -841,14 +842,28 @@ func categoriesEqual(a, b []string) bool {
 	}
 	set := make(map[string]struct{}, len(a))
 	for _, v := range a {
-		set[v] = struct{}{}
+		set[normalizeCategory(v)] = struct{}{}
 	}
 	for _, v := range b {
-		if _, ok := set[v]; !ok {
+		if _, ok := set[normalizeCategory(v)]; !ok {
 			return false
 		}
 	}
 	return true
+}
+
+// normalizeCategory reduces a category name to a comparable form. Fleet
+// reports categories as display names carrying an emoji prefix ("🔐 Security",
+// "👬 Communication"), while fleet-gitops YAML writes them plainly
+// ("Security"). Comparing them verbatim reported a change on every single run.
+//
+// Only leading symbols are stripped, never leading letters or digits, so a
+// category legitimately starting with one ("1Password") is left intact.
+func normalizeCategory(s string) string {
+	trimmed := strings.TrimLeftFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	return strings.ToLower(strings.TrimSpace(trimmed))
 }
 
 // sortedCategories returns a sorted copy of the slice.
