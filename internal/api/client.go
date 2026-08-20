@@ -302,13 +302,14 @@ type SoftwareTitleDetail struct {
 
 // SoftwareTitleDetailPackage contains the full package metadata including scripts.
 type SoftwareTitleDetailPackage struct {
-	InstallScript        string `json:"install_script"`
-	UninstallScript      string `json:"uninstall_script"`
-	PreInstallQuery      string `json:"pre_install_query"`
-	PostInstallScript    string `json:"post_install_script"`
-	SelfService          bool   `json:"self_service"`
-	Platform             string `json:"platform"`
-	FleetMaintainedAppID *uint  `json:"fleet_maintained_app_id"`
+	InstallScript        string   `json:"install_script"`
+	Categories           []string `json:"categories"`
+	UninstallScript      string   `json:"uninstall_script"`
+	PreInstallQuery      string   `json:"pre_install_query"`
+	PostInstallScript    string   `json:"post_install_script"`
+	SelfService          bool     `json:"self_service"`
+	Platform             string   `json:"platform"`
+	FleetMaintainedAppID *uint    `json:"fleet_maintained_app_id"`
 }
 
 // Label represents a Fleet label.
@@ -577,6 +578,11 @@ func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp)
 			apps[idx].UninstallScript = strings.TrimSpace(detail.SoftwarePackage.UninstallScript)
 			apps[idx].PreInstallQuery = strings.TrimSpace(detail.SoftwarePackage.PreInstallQuery)
 			apps[idx].PostInstallScript = strings.TrimSpace(detail.SoftwarePackage.PostInstallScript)
+			// GET /teams returns fleet_maintained_apps: [] for GitOps-managed
+			// teams, so this endpoint is the only place the live categories
+			// appear. Without them every app diffs as "categories: [] -> [X]"
+			// on every run.
+			apps[idx].Categories = detail.SoftwarePackage.Categories
 			return nil
 		})
 	}

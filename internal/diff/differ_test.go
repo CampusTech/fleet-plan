@@ -3164,3 +3164,193 @@ func TestDiffNoTeamProfileContent(t *testing.T) {
 		t.Errorf("warning: got %q", got)
 	}
 }
+
+// fakeScriptEnricher mimics the API client's title-detail enrichment: Fleet
+// returns each app's categories as emoji-prefixed display names.
+type fakeScriptEnricher struct {
+	categories map[string][]string // slug → categories as Fleet reports them
+	calls      int
+}
+
+func (f *fakeScriptEnricher) EnrichFleetAppScripts(_ context.Context, apps []api.TeamFleetApp) {
+	f.calls++
+	for i := range apps {
+		if cats, ok := f.categories[apps[i].Slug]; ok {
+			apps[i].Categories = cats
+		}
+	}
+}
+
+// Regression test for the churn seen on fleet-gitops PR #103: every
+// Fleet-maintained app reported `categories: [] → [X]` on every run, on PRs
+// that touched no software at all.
+//
+// GET /teams returns fleet_maintained_apps: [] for these teams, so the apps are
+// inferred from software titles. The inference carried no categories, so the
+// live side was always empty. Fleet reports them on the title detail endpoint
+// with an emoji prefix ("🔐 Security"), which the YAML writes plainly
+// ("Security"), so they must also compare equal across that difference.
+func TestDiffFleetMaintainedAppCategoriesNoChurn(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{Slug: "google-chrome/darwin", Name: "Google Chrome", Platform: "darwin", SoftwareTitleID: 308},
+			{Slug: "santa/darwin", Name: "Santa", Platform: "darwin", SoftwareTitleID: 10388},
+			{Slug: "zoom/darwin", Name: "Zoom", Platform: "darwin", SoftwareTitleID: 757},
+		},
+		Teams: []api.Team{{
+			ID:   6,
+			Name: "Workstations",
+			// What Fleet actually returns for these teams.
+			Software: api.TeamSoftware{FleetMaintained: nil},
+			SoftwareTitles: []api.SoftwareTitle{
+				{ID: 308, Name: "Google Chrome", Source: "apps", SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "darwin"}},
+				{ID: 10388, Name: "Santa", Source: "apps", SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "darwin"}},
+				{ID: 757, Name: "Zoom", Source: "apps", SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "darwin"}},
+			},
+		}},
+	}
+
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name: "Workstations",
+		Software: parser.ParsedSoftware{
+			FleetMaintained: []parser.ParsedFleetApp{
+				{Slug: "google-chrome/darwin", Categories: []string{"Browsers"}},
+				{Slug: "santa/darwin", Categories: []string{"Security"}},
+				{Slug: "zoom/darwin", Categories: []string{"Communication", "Productivity"}},
+			},
+		},
+	}}}
+
+	enricher := &fakeScriptEnricher{categories: map[string][]string{
+		"google-chrome/darwin": {"🌎 Browsers"},
+		"santa/darwin":         {"🔐 Security"},
+		"zoom/darwin":          {"👬 Communication", "🖥️ Productivity"},
+	}}
+
+	r := Diff(current, proposed, nil, nil, WithScriptEnricher(enricher))[0]
+
+	for _, c := range r.Software.Modified {
+		if fd, ok := c.Fields["categories"]; ok {
+			t.Errorf("%s: reported a categories change %q → %q; the repo and Fleet agree",
+				c.Name, fd.Old, fd.New)
+		}
+	}
+}
+
+// A genuine category change must still be reported, emoji prefix or not.
+func TestDiffFleetMaintainedAppCategoriesRealChange(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{Slug: "santa/darwin", Name: "Santa", Platform: "darwin", SoftwareTitleID: 10388},
+		},
+		Teams: []api.Team{{
+			ID:   6,
+			Name: "Workstations",
+			SoftwareTitles: []api.SoftwareTitle{
+				{ID: 10388, Name: "Santa", Source: "apps", SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "darwin"}},
+			},
+		}},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name: "Workstations",
+		Software: parser.ParsedSoftware{
+			FleetMaintained: []parser.ParsedFleetApp{
+				{Slug: "santa/darwin", Categories: []string{"Security", "Utilities"}},
+			},
+		},
+	}}}
+	enricher := &fakeScriptEnricher{categories: map[string][]string{"santa/darwin": {"🔐 Security"}}}
+
+	r := Diff(current, proposed, nil, nil, WithScriptEnricher(enricher))[0]
+
+	var found bool
+	for _, c := range r.Software.Modified {
+		if fd, ok := c.Fields["categories"]; ok {
+			found = true
+			if !strings.Contains(fd.New, "Utilities") {
+				t.Errorf("new value should include the added category, got %q", fd.New)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a categories change to be reported, got %+v", r.Software)
+	}
+}
+
+func TestNormalizeCategory(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		// Fleet's display names carry an emoji prefix; the YAML does not.
+		{"🔐 Security", "security"},
+		{"👬 Communication", "communication"},
+		{"🖥️ Productivity", "productivity"},
+		{"🌎 Browsers", "browsers"},
+		{"Security", "security"},
+		{"  Developer tools  ", "developer tools"},
+		{"SECURITY", "security"},
+		// A leading digit or letter is content, not decoration.
+		{"1Password", "1password"},
+		{"", ""},
+		{"🔐", ""},
+	}
+	for _, tt := range tests {
+		if got := normalizeCategory(tt.in); got != tt.want {
+			t.Errorf("normalizeCategory(%q): got %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestCategoriesEqualAcrossDisplayForms(t *testing.T) {
+	tests := []struct {
+		name  string
+		a     []string
+		b     []string
+		equal bool
+	}{
+		{name: "emoji prefix versus plain", a: []string{"🔐 Security"}, b: []string{"Security"}, equal: true},
+		{name: "both plain", a: []string{"Security"}, b: []string{"Security"}, equal: true},
+		{name: "reordered", a: []string{"👬 Communication", "🖥️ Productivity"}, b: []string{"Productivity", "Communication"}, equal: true},
+		{name: "case difference", a: []string{"🔐 security"}, b: []string{"Security"}, equal: true},
+		{name: "genuinely different", a: []string{"🔐 Security"}, b: []string{"Utilities"}, equal: false},
+		{name: "extra category", a: []string{"🔐 Security"}, b: []string{"Security", "Utilities"}, equal: false},
+		{name: "both empty", a: nil, b: nil, equal: true},
+		{name: "one empty", a: nil, b: []string{"Security"}, equal: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := categoriesEqual(tt.a, tt.b); got != tt.equal {
+				t.Errorf("categoriesEqual(%v, %v): got %v, want %v", tt.a, tt.b, got, tt.equal)
+			}
+		})
+	}
+}
+
+// The same normalization must apply to custom packages and App Store apps,
+// not just Fleet-maintained apps.
+func TestCategoriesNormalizedForAllSoftwareTypes(t *testing.T) {
+	current := api.TeamSoftware{
+		Packages: []api.TeamSoftwarePackage{
+			{ReferencedYAMLPath: "software/mac/thing.yml", URL: "https://x/thing.pkg", Categories: []string{"🔐 Security"}},
+		},
+		AppStoreApps: []api.TeamAppStoreApp{
+			{AppStoreID: "123", Categories: []string{"🖥️ Productivity"}},
+		},
+	}
+	proposed := parser.ParsedSoftware{
+		Packages: []parser.ParsedSoftwarePackage{
+			{RefPath: "software/mac/thing.yml", URL: "https://x/thing.pkg", Categories: []string{"Security"}},
+		},
+		AppStoreApps: []parser.ParsedAppStoreApp{
+			{AppStoreID: "123", Categories: []string{"Productivity"}},
+		},
+	}
+
+	rd := diffSoftware(current, proposed)
+	for _, c := range rd.Modified {
+		if fd, ok := c.Fields["categories"]; ok {
+			t.Errorf("%s: reported %q → %q; the values are the same category", c.Name, fd.Old, fd.New)
+		}
+	}
+}
