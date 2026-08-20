@@ -840,14 +840,19 @@ func categoriesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	set := make(map[string]struct{}, len(a))
+	// Count rather than track presence: with a set, ["Security", "Utilities"]
+	// and ["Security", "Security"] both pass the length check and every
+	// membership test, hiding a real difference.
+	counts := make(map[string]int, len(a))
 	for _, v := range a {
-		set[normalizeCategory(v)] = struct{}{}
+		counts[normalizeCategory(v)]++
 	}
 	for _, v := range b {
-		if _, ok := set[normalizeCategory(v)]; !ok {
+		key := normalizeCategory(v)
+		if counts[key] == 0 {
 			return false
 		}
+		counts[key]--
 	}
 	return true
 }

@@ -3372,29 +3372,94 @@ func TestMergeFleetAppsKeepsEnrichedFields(t *testing.T) {
 		want     map[string]api.TeamFleetApp // slug -> expected fields
 	}{
 		{
-			name:     "inferred fills the fields /teams omits",
-			apiApps:  []api.TeamFleetApp{{Slug: "santa/darwin", SelfService: true}},
-			inferred: []api.TeamFleetApp{{Slug: "santa/darwin", Categories: []string{"🔐 Security"}, InstallScript: "echo santa", TitleID: 10388, TeamID: 6}},
+			// Every field fillFleetAppGaps copies gets a distinct value, so
+			// dropping any one of them fails here.
+			name:    "inferred fills every field /teams omits",
+			apiApps: []api.TeamFleetApp{{Slug: "santa/darwin", SelfService: true}},
+			inferred: []api.TeamFleetApp{{
+				Slug:              "santa/darwin",
+				Categories:        []string{"🔐 Security"},
+				InstallScript:     "install santa",
+				UninstallScript:   "uninstall santa",
+				PreInstallQuery:   "SELECT 1 FROM santa;",
+				PostInstallScript: "post santa",
+				TitleID:           10388,
+				TeamID:            6,
+			}},
 			want: map[string]api.TeamFleetApp{
 				"santa/darwin": {
-					Slug: "santa/darwin", SelfService: true,
-					Categories: []string{"🔐 Security"}, InstallScript: "echo santa",
-					TitleID: 10388, TeamID: 6,
+					Slug:              "santa/darwin",
+					SelfService:       true,
+					Categories:        []string{"🔐 Security"},
+					InstallScript:     "install santa",
+					UninstallScript:   "uninstall santa",
+					PreInstallQuery:   "SELECT 1 FROM santa;",
+					PostInstallScript: "post santa",
+					TitleID:           10388,
+					TeamID:            6,
 				},
 			},
 		},
 		{
+			// Whatever the API did report stands, field by field.
 			name: "values the API reported are not overwritten",
-			apiApps: []api.TeamFleetApp{
-				{Slug: "zoom/darwin", Categories: []string{"👬 Communication"}, InstallScript: "api script"},
-			},
-			inferred: []api.TeamFleetApp{
-				{Slug: "zoom/darwin", Categories: []string{"👬 Communication", "🖥️ Productivity"}, InstallScript: "inferred script"},
-			},
+			apiApps: []api.TeamFleetApp{{
+				Slug:              "zoom/darwin",
+				Categories:        []string{"👬 Communication"},
+				InstallScript:     "api install",
+				UninstallScript:   "api uninstall",
+				PreInstallQuery:   "SELECT 1 FROM api;",
+				PostInstallScript: "api post",
+				TitleID:           111,
+				TeamID:            7,
+			}},
+			inferred: []api.TeamFleetApp{{
+				Slug:              "zoom/darwin",
+				Categories:        []string{"👬 Communication", "🖥️ Productivity"},
+				InstallScript:     "inferred install",
+				UninstallScript:   "inferred uninstall",
+				PreInstallQuery:   "SELECT 1 FROM inferred;",
+				PostInstallScript: "inferred post",
+				TitleID:           999,
+				TeamID:            9,
+			}},
 			want: map[string]api.TeamFleetApp{
 				"zoom/darwin": {
-					Slug:       "zoom/darwin",
-					Categories: []string{"👬 Communication"}, InstallScript: "api script",
+					Slug:              "zoom/darwin",
+					Categories:        []string{"👬 Communication"},
+					InstallScript:     "api install",
+					UninstallScript:   "api uninstall",
+					PreInstallQuery:   "SELECT 1 FROM api;",
+					PostInstallScript: "api post",
+					TitleID:           111,
+					TeamID:            7,
+				},
+			},
+		},
+		{
+			// A partially-populated API entry: only the empty fields are filled.
+			name: "only the empty fields are filled",
+			apiApps: []api.TeamFleetApp{{
+				Slug:          "figma/darwin",
+				InstallScript: "api install",
+				TitleID:       222,
+			}},
+			inferred: []api.TeamFleetApp{{
+				Slug:            "figma/darwin",
+				Categories:      []string{"🖥️ Productivity"},
+				InstallScript:   "inferred install",
+				UninstallScript: "inferred uninstall",
+				TitleID:         999,
+				TeamID:          9,
+			}},
+			want: map[string]api.TeamFleetApp{
+				"figma/darwin": {
+					Slug:            "figma/darwin",
+					Categories:      []string{"🖥️ Productivity"},
+					InstallScript:   "api install",
+					UninstallScript: "inferred uninstall",
+					TitleID:         222,
+					TeamID:          9,
 				},
 			},
 		},
@@ -3531,6 +3596,30 @@ func TestDiffFleetMaintainedAppCategoriesAgainstFixture(t *testing.T) {
 			}
 			if tt.wantChanged && !changed {
 				t.Errorf("expected a categories change to be reported, got %+v", r.Software)
+			}
+		})
+	}
+}
+
+// Duplicate categories must not mask a real difference: ["Security",
+// "Utilities"] and ["Security", "Security"] are both length 2, so a
+// set-membership comparison called them equal.
+func TestCategoriesEqualCountsDuplicates(t *testing.T) {
+	tests := []struct {
+		name  string
+		a     []string
+		b     []string
+		equal bool
+	}{
+		{name: "duplicate versus distinct", a: []string{"Security", "Utilities"}, b: []string{"Security", "Security"}, equal: false},
+		{name: "duplicate versus distinct, reversed", a: []string{"Security", "Security"}, b: []string{"Security", "Utilities"}, equal: false},
+		{name: "same duplicates", a: []string{"Security", "Security"}, b: []string{"🔐 Security", "Security"}, equal: true},
+		{name: "same distinct values", a: []string{"Security", "Utilities"}, b: []string{"Utilities", "🔐 Security"}, equal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := categoriesEqual(tt.a, tt.b); got != tt.equal {
+				t.Errorf("categoriesEqual(%v, %v): got %v, want %v", tt.a, tt.b, got, tt.equal)
 			}
 		})
 	}
