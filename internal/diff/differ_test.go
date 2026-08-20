@@ -3171,11 +3171,18 @@ func TestDiffNoTeamProfileContent(t *testing.T) {
 type fakeScriptEnricher struct {
 	categories map[string][]string // slug → categories as Fleet reports them
 	calls      int
+	// detailUnavailable mimics a GitOps-scoped token, which gets 403 from the
+	// software title detail endpoint.
+	detailUnavailable bool
 }
 
 func (f *fakeScriptEnricher) EnrichFleetAppScripts(_ context.Context, apps []api.TeamFleetApp) {
 	f.calls++
 	for i := range apps {
+		if f.detailUnavailable {
+			apps[i].DetailUnavailable = true
+			continue
+		}
 		if cats, ok := f.categories[apps[i].Slug]; ok {
 			apps[i].Categories = cats
 		}
@@ -3348,7 +3355,7 @@ func TestCategoriesNormalizedForAllSoftwareTypes(t *testing.T) {
 		},
 	}
 
-	rd := diffSoftware(current, proposed)
+	rd, _ := diffSoftware(current, proposed)
 	for _, c := range rd.Modified {
 		if fd, ok := c.Fields["categories"]; ok {
 			t.Errorf("%s: reported %q → %q; the values are the same category", c.Name, fd.Old, fd.New)
@@ -3622,5 +3629,53 @@ func TestCategoriesEqualCountsDuplicates(t *testing.T) {
 				t.Errorf("categoriesEqual(%v, %v): got %v, want %v", tt.a, tt.b, got, tt.equal)
 			}
 		})
+	}
+}
+
+// With a GitOps-scoped token, GET /software/titles/{id} returns 403, so an
+// app's live categories cannot be read at all. Reporting the unreadable side
+// as "[]" produced a categories row for every Fleet-maintained app on every
+// run — 13 of them on fleet-gitops#103. An unknown value must not be diffed,
+// the same way the script fields are only compared when both sides are known.
+func TestDiffFleetMaintainedAppCategoriesUnreadable(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{Slug: "santa/darwin", Name: "Santa", Platform: "darwin", SoftwareTitleID: 10388},
+		},
+		Teams: []api.Team{{
+			ID:   6,
+			Name: "Workstations",
+			SoftwareTitles: []api.SoftwareTitle{
+				{ID: 10388, Name: "Santa", Source: "apps", SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "darwin"}},
+			},
+		}},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name: "Workstations",
+		Software: parser.ParsedSoftware{
+			FleetMaintained: []parser.ParsedFleetApp{{Slug: "santa/darwin", Categories: []string{"Security"}}},
+		},
+	}}}
+
+	// The enricher could not read the title detail, so it marks the app rather
+	// than leaving it looking like an app with no categories.
+	enricher := &fakeScriptEnricher{detailUnavailable: true}
+
+	r := Diff(current, proposed, nil, nil, WithScriptEnricher(enricher))[0]
+
+	for _, c := range r.Software.Modified {
+		if fd, ok := c.Fields["categories"]; ok {
+			t.Errorf("%s: reported %q → %q from an unreadable live value", c.Name, fd.Old, fd.New)
+		}
+	}
+
+	var noted bool
+	for _, e := range r.Errors {
+		if strings.Contains(e, "categories") && strings.Contains(e, "permission") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Errorf("expected a note that categories could not be read, got %v", r.Errors)
 	}
 }

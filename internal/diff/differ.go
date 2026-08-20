@@ -415,7 +415,9 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					enrichedSoftware.FleetMaintained = mergeFleetApps(currentTeam.Software.FleetMaintained, inferred)
 				}
 
-				result.Software = diffSoftware(enrichedSoftware, proposedTeam.Software)
+				var softwareWarnings []string
+				result.Software, softwareWarnings = diffSoftware(enrichedSoftware, proposedTeam.Software)
+				result.Errors = append(result.Errors, softwareWarnings...)
 			}
 
 			if currentTeam.ProfilesUnavailable {
@@ -450,7 +452,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
 					baseDiff.Config, _ = diffTeamSettings(currentTeam.Settings, baseTeam.Settings)
 					if !currentTeam.SoftwareUnavailable {
-						baseDiff.Software = diffSoftware(enrichedSoftware, baseTeam.Software)
+						baseDiff.Software, _ = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
 					if !currentTeam.ProfilesUnavailable {
 						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles, nil, cfg.profileEnricher)
@@ -917,8 +919,12 @@ func disambiguateSoftwareKeys(base, urls []string) []string {
 	return keys
 }
 
-func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) ResourceDiff {
+func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) (ResourceDiff, []string) {
 	var rd ResourceDiff
+	var warnings []string
+	// Set when at least one Fleet-maintained app's title detail could not be
+	// read, so the skip is reported once rather than per app.
+	var detailUnavailable bool
 
 	// -------- Packages (keyed by referenced_yaml_path) --------
 	// The display name is always the base path; the map key may additionally
@@ -1056,7 +1062,13 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 				New: fmt.Sprint(a.SelfService),
 			}
 		}
-		if !categoriesEqual(cur.Categories, a.Categories) {
+		// Categories live on the software title detail endpoint. When that
+		// could not be read, the live value is unknown, not empty: comparing
+		// it would report the same change on every run.
+		switch {
+		case cur.DetailUnavailable:
+			detailUnavailable = true
+		case !categoriesEqual(cur.Categories, a.Categories):
 			fields["categories"] = FieldDiff{
 				Old: formatCategories(cur.Categories), New: formatCategories(a.Categories),
 				IsSlice: true, OldSlice: sortedCategories(cur.Categories), NewSlice: sortedCategories(a.Categories),
@@ -1154,7 +1166,12 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 	}
 
 	sortResourceChanges(&rd)
-	return rd
+	if detailUnavailable {
+		warnings = append(warnings,
+			"fleet-maintained app categories not diffed: API token lacks permission to read software title details")
+	}
+
+	return rd, warnings
 }
 
 func inferSoftwarePathFromSource(source string) string {

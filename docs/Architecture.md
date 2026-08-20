@@ -98,7 +98,7 @@ Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched 
 | Policies | `name` | query, description, resolution, platform, critical |
 | Queries | `name` | query, interval, platform, logging |
 | Software packages | `referenced_yaml_path` | url, hash, self_service, categories |
-| Fleet-maintained apps | `slug` | self_service, categories |
+| Fleet-maintained apps | `slug` | self_service, categories (skipped when the title detail is unreadable), scripts |
 | App Store apps | `app_store_id` | self_service, categories |
 | Profiles | PayloadDisplayName | changed payload key paths (names only, never values) |
 | Scripts | filename | line count diff (`+N/-N`, `~N` for single-line) |
