@@ -3354,3 +3354,93 @@ func TestCategoriesNormalizedForAllSoftwareTypes(t *testing.T) {
 		}
 	}
 }
+
+// Regression test for churn that survived the categories fix: when Fleet
+// returns a fleet_maintained_apps entry for a slug, that entry wins outright —
+// so an API entry with no categories discarded the enriched inferred twin that
+// did have them, and the app reported "categories: [] → [X]" forever.
+//
+// Fleet returns a partial list here: some apps come back from /teams (without
+// categories), others only exist as software titles. Both must end up enriched.
+func TestMergeFleetAppsKeepsEnrichedFields(t *testing.T) {
+	apiApps := []api.TeamFleetApp{
+		// From /teams: no categories, no scripts.
+		{Slug: "santa/darwin", SelfService: true},
+		// Already complete; must not be clobbered by a thinner inferred entry.
+		{Slug: "zoom/darwin", Categories: []string{"👬 Communication"}, InstallScript: "api script"},
+	}
+	inferred := []api.TeamFleetApp{
+		{Slug: "santa/darwin", Categories: []string{"🔐 Security"}, InstallScript: "echo santa", TitleID: 10388, TeamID: 6},
+		{Slug: "zoom/darwin", Categories: []string{"👬 Communication", "🖥️ Productivity"}, InstallScript: "inferred script"},
+		// Only present as a software title.
+		{Slug: "figma/darwin", Categories: []string{"🖥️ Productivity"}},
+	}
+
+	merged := mergeFleetApps(apiApps, inferred)
+
+	bySlug := make(map[string]api.TeamFleetApp, len(merged))
+	for _, a := range merged {
+		bySlug[a.Slug] = a
+	}
+	if len(merged) != 3 {
+		t.Fatalf("got %d apps, want 3: %+v", len(merged), merged)
+	}
+
+	santa := bySlug["santa/darwin"]
+	if len(santa.Categories) != 1 || santa.Categories[0] != "🔐 Security" {
+		t.Errorf("santa categories: got %v, want the enriched value", santa.Categories)
+	}
+	if santa.InstallScript != "echo santa" {
+		t.Errorf("santa install script: got %q, want the enriched value", santa.InstallScript)
+	}
+	if !santa.SelfService {
+		t.Errorf("santa self_service: got false, want the API value preserved")
+	}
+
+	// The API already had these, so they stand.
+	zoom := bySlug["zoom/darwin"]
+	if len(zoom.Categories) != 1 || zoom.InstallScript != "api script" {
+		t.Errorf("zoom: got categories=%v script=%q, want the API values kept",
+			zoom.Categories, zoom.InstallScript)
+	}
+
+	if len(bySlug["figma/darwin"].Categories) != 1 {
+		t.Errorf("figma: inferred-only app lost its categories: %+v", bySlug["figma/darwin"])
+	}
+}
+
+// End-to-end: an app Fleet returns without categories must not churn.
+func TestDiffFleetMaintainedAppFromAPIWithoutCategories(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{Slug: "santa/darwin", Name: "Santa", Platform: "darwin", SoftwareTitleID: 10388},
+		},
+		Teams: []api.Team{{
+			ID:   6,
+			Name: "Workstations",
+			// Fleet returned the app, but with no categories on it.
+			Software: api.TeamSoftware{
+				FleetMaintained: []api.TeamFleetApp{{Slug: "santa/darwin"}},
+			},
+			SoftwareTitles: []api.SoftwareTitle{
+				{ID: 10388, Name: "Santa", Source: "apps", SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "darwin"}},
+			},
+		}},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name: "Workstations",
+		Software: parser.ParsedSoftware{
+			FleetMaintained: []parser.ParsedFleetApp{{Slug: "santa/darwin", Categories: []string{"Security"}}},
+		},
+	}}}
+	enricher := &fakeScriptEnricher{categories: map[string][]string{"santa/darwin": {"🔐 Security"}}}
+
+	r := Diff(current, proposed, nil, nil, WithScriptEnricher(enricher))[0]
+
+	for _, c := range r.Software.Modified {
+		if fd, ok := c.Fields["categories"]; ok {
+			t.Errorf("%s: reported %q → %q; Fleet and the repo agree once enrichment is applied",
+				c.Name, fd.Old, fd.New)
+		}
+	}
+}

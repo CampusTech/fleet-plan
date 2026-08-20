@@ -1170,11 +1170,23 @@ func sortResourceChanges(rd *ResourceDiff) {
 // mergeFleetApps combines API-provided FMAs with inferred ones. API entries
 // take precedence for slugs that appear in both lists.
 func mergeFleetApps(apiApps, inferred []api.TeamFleetApp) []api.TeamFleetApp {
+	inferredBySlug := make(map[string]api.TeamFleetApp, len(inferred))
+	for _, a := range inferred {
+		inferredBySlug[parser.NormalizeSoftwarePath(a.Slug)] = a
+	}
+
 	seen := make(map[string]bool, len(apiApps))
 	merged := make([]api.TeamFleetApp, 0, len(apiApps)+len(inferred))
 	for _, a := range apiApps {
 		slug := parser.NormalizeSoftwarePath(a.Slug)
 		seen[slug] = true
+		// The /teams entry is authoritative for what it reports, but it omits
+		// categories and scripts. Fill those from the inferred twin, which was
+		// enriched from the software title detail; otherwise the app reports a
+		// phantom "categories: [] -> [X]" change on every run.
+		if twin, ok := inferredBySlug[slug]; ok {
+			fillFleetAppGaps(&a, twin)
+		}
 		merged = append(merged, a)
 	}
 	for _, a := range inferred {
@@ -1184,6 +1196,32 @@ func mergeFleetApps(apiApps, inferred []api.TeamFleetApp) []api.TeamFleetApp {
 		}
 	}
 	return merged
+}
+
+// fillFleetAppGaps copies fields the /teams response does not carry from the
+// inferred, enriched entry. Values the API did report are left alone.
+func fillFleetAppGaps(dst *api.TeamFleetApp, src api.TeamFleetApp) {
+	if len(dst.Categories) == 0 {
+		dst.Categories = src.Categories
+	}
+	if dst.InstallScript == "" {
+		dst.InstallScript = src.InstallScript
+	}
+	if dst.UninstallScript == "" {
+		dst.UninstallScript = src.UninstallScript
+	}
+	if dst.PreInstallQuery == "" {
+		dst.PreInstallQuery = src.PreInstallQuery
+	}
+	if dst.PostInstallScript == "" {
+		dst.PostInstallScript = src.PostInstallScript
+	}
+	if dst.TitleID == 0 {
+		dst.TitleID = src.TitleID
+	}
+	if dst.TeamID == 0 {
+		dst.TeamID = src.TeamID
+	}
 }
 
 func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, proposedPackages []parser.ParsedSoftwarePackage) []api.TeamFleetApp {
