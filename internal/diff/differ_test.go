@@ -2,6 +2,7 @@ package diff
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -3170,11 +3171,18 @@ func TestDiffNoTeamProfileContent(t *testing.T) {
 type fakeScriptEnricher struct {
 	categories map[string][]string // slug → categories as Fleet reports them
 	calls      int
+	// detailUnavailable mimics a GitOps-scoped token, which gets 403 from the
+	// software title detail endpoint.
+	detailUnavailable bool
 }
 
 func (f *fakeScriptEnricher) EnrichFleetAppScripts(_ context.Context, apps []api.TeamFleetApp) {
 	f.calls++
 	for i := range apps {
+		if f.detailUnavailable {
+			apps[i].DetailUnavailable = true
+			continue
+		}
 		if cats, ok := f.categories[apps[i].Slug]; ok {
 			apps[i].Categories = cats
 		}
@@ -3347,10 +3355,327 @@ func TestCategoriesNormalizedForAllSoftwareTypes(t *testing.T) {
 		},
 	}
 
-	rd := diffSoftware(current, proposed)
+	rd, _ := diffSoftware(current, proposed)
 	for _, c := range rd.Modified {
 		if fd, ok := c.Fields["categories"]; ok {
 			t.Errorf("%s: reported %q → %q; the values are the same category", c.Name, fd.Old, fd.New)
 		}
+	}
+}
+
+// Regression test for churn that survived the categories fix: when Fleet
+// returns a fleet_maintained_apps entry for a slug, that entry used to win
+// outright -- so an API entry with no categories discarded the enriched
+// inferred twin that did have them, and the app reported
+// "categories: [] -> [X]" forever.
+//
+// Fleet returns a partial list here: some apps come back from /teams (without
+// categories), others exist only as software titles. Both must end up enriched.
+func TestMergeFleetAppsKeepsEnrichedFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		apiApps  []api.TeamFleetApp
+		inferred []api.TeamFleetApp
+		want     map[string]api.TeamFleetApp // slug -> expected fields
+	}{
+		{
+			// Every field fillFleetAppGaps copies gets a distinct value, so
+			// dropping any one of them fails here.
+			name:    "inferred fills every field /teams omits",
+			apiApps: []api.TeamFleetApp{{Slug: "santa/darwin", SelfService: true}},
+			inferred: []api.TeamFleetApp{{
+				Slug:              "santa/darwin",
+				Categories:        []string{"🔐 Security"},
+				InstallScript:     "install santa",
+				UninstallScript:   "uninstall santa",
+				PreInstallQuery:   "SELECT 1 FROM santa;",
+				PostInstallScript: "post santa",
+				TitleID:           10388,
+				TeamID:            6,
+			}},
+			want: map[string]api.TeamFleetApp{
+				"santa/darwin": {
+					Slug:              "santa/darwin",
+					SelfService:       true,
+					Categories:        []string{"🔐 Security"},
+					InstallScript:     "install santa",
+					UninstallScript:   "uninstall santa",
+					PreInstallQuery:   "SELECT 1 FROM santa;",
+					PostInstallScript: "post santa",
+					TitleID:           10388,
+					TeamID:            6,
+				},
+			},
+		},
+		{
+			// Whatever the API did report stands, field by field.
+			name: "values the API reported are not overwritten",
+			apiApps: []api.TeamFleetApp{{
+				Slug:              "zoom/darwin",
+				Categories:        []string{"👬 Communication"},
+				InstallScript:     "api install",
+				UninstallScript:   "api uninstall",
+				PreInstallQuery:   "SELECT 1 FROM api;",
+				PostInstallScript: "api post",
+				TitleID:           111,
+				TeamID:            7,
+			}},
+			inferred: []api.TeamFleetApp{{
+				Slug:              "zoom/darwin",
+				Categories:        []string{"👬 Communication", "🖥️ Productivity"},
+				InstallScript:     "inferred install",
+				UninstallScript:   "inferred uninstall",
+				PreInstallQuery:   "SELECT 1 FROM inferred;",
+				PostInstallScript: "inferred post",
+				TitleID:           999,
+				TeamID:            9,
+			}},
+			want: map[string]api.TeamFleetApp{
+				"zoom/darwin": {
+					Slug:              "zoom/darwin",
+					Categories:        []string{"👬 Communication"},
+					InstallScript:     "api install",
+					UninstallScript:   "api uninstall",
+					PreInstallQuery:   "SELECT 1 FROM api;",
+					PostInstallScript: "api post",
+					TitleID:           111,
+					TeamID:            7,
+				},
+			},
+		},
+		{
+			// A partially-populated API entry: only the empty fields are filled.
+			name: "only the empty fields are filled",
+			apiApps: []api.TeamFleetApp{{
+				Slug:          "figma/darwin",
+				InstallScript: "api install",
+				TitleID:       222,
+			}},
+			inferred: []api.TeamFleetApp{{
+				Slug:            "figma/darwin",
+				Categories:      []string{"🖥️ Productivity"},
+				InstallScript:   "inferred install",
+				UninstallScript: "inferred uninstall",
+				TitleID:         999,
+				TeamID:          9,
+			}},
+			want: map[string]api.TeamFleetApp{
+				"figma/darwin": {
+					Slug:            "figma/darwin",
+					Categories:      []string{"🖥️ Productivity"},
+					InstallScript:   "api install",
+					UninstallScript: "inferred uninstall",
+					TitleID:         222,
+					TeamID:          9,
+				},
+			},
+		},
+		{
+			name:     "inferred-only app is retained",
+			apiApps:  nil,
+			inferred: []api.TeamFleetApp{{Slug: "figma/darwin", Categories: []string{"🖥️ Productivity"}}},
+			want: map[string]api.TeamFleetApp{
+				"figma/darwin": {Slug: "figma/darwin", Categories: []string{"🖥️ Productivity"}},
+			},
+		},
+		{
+			// Slugs are matched after path normalization, so a leading "./"
+			// on either side must still pair the two entries.
+			name:     "slugs pair after normalization",
+			apiApps:  []api.TeamFleetApp{{Slug: "./santa/darwin", SelfService: true}},
+			inferred: []api.TeamFleetApp{{Slug: "santa/darwin", Categories: []string{"🔐 Security"}}},
+			want: map[string]api.TeamFleetApp{
+				"./santa/darwin": {
+					Slug: "./santa/darwin", SelfService: true,
+					Categories: []string{"🔐 Security"},
+				},
+			},
+		},
+		{
+			name: "an app on each side only",
+			apiApps: []api.TeamFleetApp{
+				{Slug: "santa/darwin", SelfService: true},
+			},
+			inferred: []api.TeamFleetApp{
+				{Slug: "santa/darwin", Categories: []string{"🔐 Security"}},
+				{Slug: "figma/darwin", Categories: []string{"🖥️ Productivity"}},
+			},
+			want: map[string]api.TeamFleetApp{
+				"santa/darwin": {Slug: "santa/darwin", SelfService: true, Categories: []string{"🔐 Security"}},
+				"figma/darwin": {Slug: "figma/darwin", Categories: []string{"🖥️ Productivity"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			merged := mergeFleetApps(tt.apiApps, tt.inferred)
+
+			if len(merged) != len(tt.want) {
+				t.Fatalf("got %d apps, want %d: %+v", len(merged), len(tt.want), merged)
+			}
+			for _, got := range merged {
+				want, ok := tt.want[got.Slug]
+				if !ok {
+					t.Errorf("unexpected app in merge output: %+v", got)
+					continue
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s:\n got %+v\nwant %+v", got.Slug, got, want)
+				}
+			}
+		})
+	}
+}
+
+// End-to-end against the shared testdata fixture, whose Workstations team
+// configures cursor/windows with categories. Whether Fleet returns the app
+// itself or it has to be inferred from software titles, the categories must
+// match and produce no diff row.
+func TestDiffFleetMaintainedAppCategoriesAgainstFixture(t *testing.T) {
+	root := testutil.TestdataRoot(t)
+	proposed, err := parser.ParseRepo(root, []string{"Workstations"}, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+
+	// The fixture writes "Browsers"; Fleet reports the display name.
+	const liveCategory = "🌎 Browsers"
+
+	tests := []struct {
+		name        string
+		apiApps     []api.TeamFleetApp
+		liveCats    []string
+		wantChanged bool
+	}{
+		{
+			name:     "app absent from /teams, inferred and enriched",
+			apiApps:  nil,
+			liveCats: []string{liveCategory},
+		},
+		{
+			name:     "app returned by /teams without categories",
+			apiApps:  []api.TeamFleetApp{{Slug: "cursor/windows", SelfService: true}},
+			liveCats: []string{liveCategory},
+		},
+		{
+			name:     "app returned by /teams with categories already",
+			apiApps:  []api.TeamFleetApp{{Slug: "cursor/windows", SelfService: true, Categories: []string{liveCategory}}},
+			liveCats: nil,
+		},
+		{
+			name:        "genuine category difference is still reported",
+			apiApps:     []api.TeamFleetApp{{Slug: "cursor/windows", SelfService: true, Categories: []string{"🔐 Security"}}},
+			liveCats:    nil,
+			wantChanged: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current := &api.FleetState{
+				FleetMaintainedCatalog: []api.FleetMaintainedApp{
+					{Slug: "cursor/windows", Name: "Cursor", Platform: "windows", SoftwareTitleID: 4242},
+				},
+				Teams: []api.Team{{
+					ID:       1,
+					Name:     "Workstations",
+					Software: api.TeamSoftware{FleetMaintained: tt.apiApps},
+					SoftwareTitles: []api.SoftwareTitle{{
+						ID: 4242, Name: "Cursor", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "windows", SelfService: true},
+					}},
+				}},
+			}
+			enricher := &fakeScriptEnricher{categories: map[string][]string{"cursor/windows": tt.liveCats}}
+
+			r := Diff(current, proposed, []string{"Workstations"}, nil, WithScriptEnricher(enricher))[0]
+
+			var changed bool
+			for _, c := range r.Software.Modified {
+				if fd, ok := c.Fields["categories"]; ok && strings.Contains(c.Name, "cursor") {
+					changed = true
+					if !tt.wantChanged {
+						t.Errorf("%s: reported %q -> %q; the values are the same category",
+							c.Name, fd.Old, fd.New)
+					}
+				}
+			}
+			if tt.wantChanged && !changed {
+				t.Errorf("expected a categories change to be reported, got %+v", r.Software)
+			}
+		})
+	}
+}
+
+// Duplicate categories must not mask a real difference: ["Security",
+// "Utilities"] and ["Security", "Security"] are both length 2, so a
+// set-membership comparison called them equal.
+func TestCategoriesEqualCountsDuplicates(t *testing.T) {
+	tests := []struct {
+		name  string
+		a     []string
+		b     []string
+		equal bool
+	}{
+		{name: "duplicate versus distinct", a: []string{"Security", "Utilities"}, b: []string{"Security", "Security"}, equal: false},
+		{name: "duplicate versus distinct, reversed", a: []string{"Security", "Security"}, b: []string{"Security", "Utilities"}, equal: false},
+		{name: "same duplicates", a: []string{"Security", "Security"}, b: []string{"🔐 Security", "Security"}, equal: true},
+		{name: "same distinct values", a: []string{"Security", "Utilities"}, b: []string{"Utilities", "🔐 Security"}, equal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := categoriesEqual(tt.a, tt.b); got != tt.equal {
+				t.Errorf("categoriesEqual(%v, %v): got %v, want %v", tt.a, tt.b, got, tt.equal)
+			}
+		})
+	}
+}
+
+// With a GitOps-scoped token, GET /software/titles/{id} returns 403, so an
+// app's live categories cannot be read at all. Reporting the unreadable side
+// as "[]" produced a categories row for every Fleet-maintained app on every
+// run — 13 of them on fleet-gitops#103. An unknown value must not be diffed,
+// the same way the script fields are only compared when both sides are known.
+func TestDiffFleetMaintainedAppCategoriesUnreadable(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{Slug: "santa/darwin", Name: "Santa", Platform: "darwin", SoftwareTitleID: 10388},
+		},
+		Teams: []api.Team{{
+			ID:   6,
+			Name: "Workstations",
+			SoftwareTitles: []api.SoftwareTitle{
+				{ID: 10388, Name: "Santa", Source: "apps", SoftwarePackage: &api.SoftwareTitlePackageMeta{Platform: "darwin"}},
+			},
+		}},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name: "Workstations",
+		Software: parser.ParsedSoftware{
+			FleetMaintained: []parser.ParsedFleetApp{{Slug: "santa/darwin", Categories: []string{"Security"}}},
+		},
+	}}}
+
+	// The enricher could not read the title detail, so it marks the app rather
+	// than leaving it looking like an app with no categories.
+	enricher := &fakeScriptEnricher{detailUnavailable: true}
+
+	r := Diff(current, proposed, nil, nil, WithScriptEnricher(enricher))[0]
+
+	for _, c := range r.Software.Modified {
+		if fd, ok := c.Fields["categories"]; ok {
+			t.Errorf("%s: reported %q → %q from an unreadable live value", c.Name, fd.Old, fd.New)
+		}
+	}
+
+	var noted bool
+	for _, e := range r.Errors {
+		if strings.Contains(e, "categories") && strings.Contains(e, "permission") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Errorf("expected a note that categories could not be read, got %v", r.Errors)
 	}
 }

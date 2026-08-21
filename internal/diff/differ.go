@@ -415,7 +415,9 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					enrichedSoftware.FleetMaintained = mergeFleetApps(currentTeam.Software.FleetMaintained, inferred)
 				}
 
-				result.Software = diffSoftware(enrichedSoftware, proposedTeam.Software)
+				var softwareWarnings []string
+				result.Software, softwareWarnings = diffSoftware(enrichedSoftware, proposedTeam.Software)
+				result.Errors = append(result.Errors, softwareWarnings...)
 			}
 
 			if currentTeam.ProfilesUnavailable {
@@ -450,7 +452,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
 					baseDiff.Config, _ = diffTeamSettings(currentTeam.Settings, baseTeam.Settings)
 					if !currentTeam.SoftwareUnavailable {
-						baseDiff.Software = diffSoftware(enrichedSoftware, baseTeam.Software)
+						baseDiff.Software, _ = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
 					if !currentTeam.ProfilesUnavailable {
 						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles, nil, cfg.profileEnricher)
@@ -840,14 +842,19 @@ func categoriesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	set := make(map[string]struct{}, len(a))
+	// Count rather than track presence: with a set, ["Security", "Utilities"]
+	// and ["Security", "Security"] both pass the length check and every
+	// membership test, hiding a real difference.
+	counts := make(map[string]int, len(a))
 	for _, v := range a {
-		set[normalizeCategory(v)] = struct{}{}
+		counts[normalizeCategory(v)]++
 	}
 	for _, v := range b {
-		if _, ok := set[normalizeCategory(v)]; !ok {
+		key := normalizeCategory(v)
+		if counts[key] == 0 {
 			return false
 		}
+		counts[key]--
 	}
 	return true
 }
@@ -912,8 +919,12 @@ func disambiguateSoftwareKeys(base, urls []string) []string {
 	return keys
 }
 
-func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) ResourceDiff {
+func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) (ResourceDiff, []string) {
 	var rd ResourceDiff
+	var warnings []string
+	// Set when at least one Fleet-maintained app's title detail could not be
+	// read, so the skip is reported once rather than per app.
+	var detailUnavailable bool
 
 	// -------- Packages (keyed by referenced_yaml_path) --------
 	// The display name is always the base path; the map key may additionally
@@ -1051,7 +1062,13 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 				New: fmt.Sprint(a.SelfService),
 			}
 		}
-		if !categoriesEqual(cur.Categories, a.Categories) {
+		// Categories live on the software title detail endpoint. When that
+		// could not be read, the live value is unknown, not empty: comparing
+		// it would report the same change on every run.
+		switch {
+		case cur.DetailUnavailable:
+			detailUnavailable = true
+		case !categoriesEqual(cur.Categories, a.Categories):
 			fields["categories"] = FieldDiff{
 				Old: formatCategories(cur.Categories), New: formatCategories(a.Categories),
 				IsSlice: true, OldSlice: sortedCategories(cur.Categories), NewSlice: sortedCategories(a.Categories),
@@ -1149,7 +1166,12 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 	}
 
 	sortResourceChanges(&rd)
-	return rd
+	if detailUnavailable {
+		warnings = append(warnings,
+			"fleet-maintained app categories not diffed: API token lacks permission to read software title details")
+	}
+
+	return rd, warnings
 }
 
 func inferSoftwarePathFromSource(source string) string {
@@ -1170,11 +1192,23 @@ func sortResourceChanges(rd *ResourceDiff) {
 // mergeFleetApps combines API-provided FMAs with inferred ones. API entries
 // take precedence for slugs that appear in both lists.
 func mergeFleetApps(apiApps, inferred []api.TeamFleetApp) []api.TeamFleetApp {
+	inferredBySlug := make(map[string]api.TeamFleetApp, len(inferred))
+	for _, a := range inferred {
+		inferredBySlug[parser.NormalizeSoftwarePath(a.Slug)] = a
+	}
+
 	seen := make(map[string]bool, len(apiApps))
 	merged := make([]api.TeamFleetApp, 0, len(apiApps)+len(inferred))
 	for _, a := range apiApps {
 		slug := parser.NormalizeSoftwarePath(a.Slug)
 		seen[slug] = true
+		// The /teams entry is authoritative for what it reports, but it omits
+		// categories and scripts. Fill those from the inferred twin, which was
+		// enriched from the software title detail; otherwise the app reports a
+		// phantom "categories: [] -> [X]" change on every run.
+		if twin, ok := inferredBySlug[slug]; ok {
+			fillFleetAppGaps(&a, twin)
+		}
 		merged = append(merged, a)
 	}
 	for _, a := range inferred {
@@ -1184,6 +1218,32 @@ func mergeFleetApps(apiApps, inferred []api.TeamFleetApp) []api.TeamFleetApp {
 		}
 	}
 	return merged
+}
+
+// fillFleetAppGaps copies fields the /teams response does not carry from the
+// inferred, enriched entry. Values the API did report are left alone.
+func fillFleetAppGaps(dst *api.TeamFleetApp, src api.TeamFleetApp) {
+	if len(dst.Categories) == 0 {
+		dst.Categories = src.Categories
+	}
+	if dst.InstallScript == "" {
+		dst.InstallScript = src.InstallScript
+	}
+	if dst.UninstallScript == "" {
+		dst.UninstallScript = src.UninstallScript
+	}
+	if dst.PreInstallQuery == "" {
+		dst.PreInstallQuery = src.PreInstallQuery
+	}
+	if dst.PostInstallScript == "" {
+		dst.PostInstallScript = src.PostInstallScript
+	}
+	if dst.TitleID == 0 {
+		dst.TitleID = src.TitleID
+	}
+	if dst.TeamID == 0 {
+		dst.TeamID = src.TeamID
+	}
 }
 
 func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, proposedPackages []parser.ParsedSoftwarePackage) []api.TeamFleetApp {

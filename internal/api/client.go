@@ -223,6 +223,11 @@ type TeamFleetApp struct {
 	UninstallScript   string   `json:"-"`
 	PreInstallQuery   string   `json:"-"`
 	PostInstallScript string   `json:"-"`
+	// DetailUnavailable is set when the software title detail could not be
+	// read, which a GitOps-scoped token cannot do (403). Categories and
+	// scripts are then unknown rather than empty, and must not be diffed as
+	// though Fleet had none.
+	DetailUnavailable bool `json:"-"`
 }
 
 // TeamAppStoreApp is a VPP App Store app assigned to a team.
@@ -572,6 +577,10 @@ func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp)
 		g.Go(func() error {
 			detail, err := c.GetSoftwareTitleDetail(gctx, apps[idx].TitleID, apps[idx].TeamID)
 			if err != nil || detail.SoftwarePackage == nil {
+				// Record that the live values are unknown. A GitOps-scoped
+				// token gets 403 here, and treating that as "no categories"
+				// reported a change on every run.
+				apps[idx].DetailUnavailable = true
 				return nil
 			}
 			apps[idx].InstallScript = strings.TrimSpace(detail.SoftwarePackage.InstallScript)

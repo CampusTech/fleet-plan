@@ -150,7 +150,16 @@ When `--git` is active, fleet-plan:
 
 ## Known Limitations
 
-- **GitOps API token cannot read software or profiles.** The `gitops` role returns HTTP 403 on `/software/titles` and `/mdm/profiles`. `fleet-plan` handles this gracefully by skipping those resources, but the diff will not include software or profile changes. Tracked upstream: [fleetdm/fleet#38044](https://github.com/fleetdm/fleet/issues/38044).
+- **GitOps API token has partial software and profile access.** Verified against Fleet 4.90.1 with a `gitops` role token:
+
+  | Endpoint | Result |
+  |---|---|
+  | `/software/titles` (list) | 200 — readable, so software is diffed |
+  | `/software/titles/{id}` (detail) | 403 |
+  | `/software/fleet_maintained_apps` | 200 |
+  | `/mdm/profiles` | 403 |
+
+  Because the detail endpoint is refused, a Fleet-maintained app's **categories** cannot be read with a `gitops` token. `fleet-plan` reports `fleet-maintained app categories not diffed: API token lacks permission to read software title details` rather than treating the unreadable value as empty, which would show `categories: [] → [X]` for every app on every run. Install/uninstall scripts for those apps are likewise not compared. Use a token with broader read access if you need category and script diffs. Tracked upstream: [fleetdm/fleet#38044](https://github.com/fleetdm/fleet/issues/38044).
 
 ## Contributing
 
