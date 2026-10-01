@@ -302,6 +302,26 @@ func TestDiffPolicyScenarios(t *testing.T) {
 			current:  []api.Policy{{Name: "P1", Query: "SELECT 1;", Platform: "darwin"}},
 			proposed: []parser.ParsedPolicy{{Name: "P1", Query: "SELECT 1;", Platform: "darwin"}},
 		},
+		{
+			// Fleet generates a patch policy's query and platform from the
+			// maintained-app catalog; the YAML must not carry them, so their
+			// absence there is not a change.
+			name: "patch policy generated query and platform not diffed",
+			current: []api.Policy{{
+				Name:     "macOS - Zoom up to date",
+				Query:    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM apps WHERE bundle_identifier = 'us.zoom.xos');",
+				Platform: "darwin",
+			}},
+			proposed: []parser.ParsedPolicy{{Name: "macOS - Zoom up to date", Type: "patch"}},
+		},
+		{
+			name: "patch policy description change still diffed",
+			current: []api.Policy{{
+				Name: "macOS - Zoom up to date", Query: "SELECT 1;", Platform: "darwin", Description: "old",
+			}},
+			proposed:     []parser.ParsedPolicy{{Name: "macOS - Zoom up to date", Type: "patch", Description: "new"}},
+			wantModified: 1, checkName: "macOS - Zoom up to date", checkFields: []string{"description"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2206,6 +2226,32 @@ func TestDiffSoftwareCategories(t *testing.T) {
 				},
 			},
 			wantModified: 1, checkName: "app store app 123456", checkHasCat: true,
+		},
+		{
+			// No categories key: fleetctl gitops leaves the app's categories
+			// (Fleet's catalog default) alone, so this is not a change.
+			name: "FMA categories omitted keeps Fleet's",
+			current: api.TeamSoftware{
+				FleetMaintained: []api.TeamFleetApp{
+					{Slug: "swiftdialog/darwin", Categories: []string{"🧰 Developer tools"}},
+				},
+			},
+			proposed: parser.ParsedSoftware{
+				FleetMaintained: []parser.ParsedFleetApp{{Slug: "swiftdialog/darwin"}},
+			},
+			wantModified: 0,
+		},
+		{
+			name: "FMA categories explicitly emptied",
+			current: api.TeamSoftware{
+				FleetMaintained: []api.TeamFleetApp{
+					{Slug: "swiftdialog/darwin", Categories: []string{"🧰 Developer tools"}},
+				},
+			},
+			proposed: parser.ParsedSoftware{
+				FleetMaintained: []parser.ParsedFleetApp{{Slug: "swiftdialog/darwin", Categories: []string{}}},
+			},
+			wantModified: 1, checkName: "fleet app swiftdialog/darwin", checkHasCat: true,
 		},
 	}
 

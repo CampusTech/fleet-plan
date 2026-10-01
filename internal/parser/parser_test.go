@@ -1273,3 +1273,64 @@ func TestReadProfileContent(t *testing.T) {
 		})
 	}
 }
+
+// TestParseRepoPatchPolicyAndFMACategories covers the two YAML shapes the diff
+// engine must tell apart: a `type: patch` policy (no query/platform in YAML),
+// and a Fleet-maintained app whose categories key is omitted (nil) versus set
+// to an explicit empty list (non-nil, length 0).
+func TestParseRepoPatchPolicyAndFMACategories(t *testing.T) {
+	root := t.TempDir()
+	fleetsDir := filepath.Join(root, "fleets")
+	if err := os.MkdirAll(fleetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libDir := filepath.Join(root, "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := `- name: macOS - Zoom up to date
+  type: patch
+  fleet_maintained_app_slug: zoom/darwin
+`
+	if err := os.WriteFile(filepath.Join(libDir, "patch.yml"), []byte(policyYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamYAML := `name: Workstations
+policies:
+  - path: ../lib/patch.yml
+queries: []
+software:
+  fleet_maintained_apps:
+    - slug: swiftdialog/darwin
+    - slug: zoom/darwin
+      categories: []
+team_settings: {}
+`
+	if err := os.WriteFile(filepath.Join(fleetsDir, "workstations.yml"), []byte(teamYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d (errors: %v)", len(repo.Teams), repo.Errors)
+	}
+	team := repo.Teams[0]
+
+	if len(team.Policies) != 1 || team.Policies[0].Type != "patch" {
+		t.Fatalf("policy Type: got %+v, want one policy with Type=patch", team.Policies)
+	}
+
+	cats := map[string][]string{}
+	for _, a := range team.Software.FleetMaintained {
+		cats[a.Slug] = a.Categories
+	}
+	if c, ok := cats["swiftdialog/darwin"]; !ok || c != nil {
+		t.Errorf("omitted categories: got %#v, want nil", c)
+	}
+	if c, ok := cats["zoom/darwin"]; !ok || c == nil || len(c) != 0 {
+		t.Errorf("explicit empty categories: got %#v, want non-nil empty slice", c)
+	}
+}
