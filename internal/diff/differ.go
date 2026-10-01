@@ -719,9 +719,14 @@ func diffPolicies(current []api.Policy, proposed []parser.ParsedPolicy) Resource
 		cur, exists := currentMap[p.Name]
 		if !exists {
 			fields := map[string]FieldDiff{
-				"query":    {New: normalizeWS(p.Query)},
-				"platform": {New: p.Platform},
 				"critical": {New: fmt.Sprint(p.Critical)},
+			}
+			// Patch policies omit query and platform; Fleet generates them.
+			if p.Query != "" {
+				fields["query"] = FieldDiff{New: normalizeWS(p.Query)}
+			}
+			if p.Platform != "" {
+				fields["platform"] = FieldDiff{New: p.Platform}
 			}
 			if p.Description != "" {
 				fields["description"] = FieldDiff{New: normalizeWS(p.Description)}
@@ -734,7 +739,10 @@ func diffPolicies(current []api.Policy, proposed []parser.ParsedPolicy) Resource
 		}
 
 		fields := make(map[string]FieldDiff)
-		if normalizeWS(cur.Query) != normalizeWS(p.Query) {
+		// Fleet generates query and platform for patch policies from the
+		// maintained-app catalog, so the YAML has nothing to compare.
+		patch := p.Type == "patch"
+		if !patch && normalizeWS(cur.Query) != normalizeWS(p.Query) {
 			fields["query"] = FieldDiff{Old: normalizeWS(cur.Query), New: normalizeWS(p.Query)}
 		}
 		if normalizeWS(cur.Description) != normalizeWS(p.Description) {
@@ -743,7 +751,7 @@ func diffPolicies(current []api.Policy, proposed []parser.ParsedPolicy) Resource
 		if normalizeWS(cur.Resolution) != normalizeWS(p.Resolution) {
 			fields["resolution"] = FieldDiff{Old: normalizeWS(cur.Resolution), New: normalizeWS(p.Resolution)}
 		}
-		if cur.Platform != p.Platform {
+		if !patch && cur.Platform != p.Platform {
 			fields["platform"] = FieldDiff{Old: cur.Platform, New: p.Platform}
 		}
 		if cur.Critical != p.Critical {
@@ -1068,6 +1076,8 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) (Res
 		switch {
 		case cur.DetailUnavailable:
 			detailUnavailable = true
+		// An omitted categories key (nil) leaves Fleet's categories untouched.
+		case a.Categories == nil:
 		case !categoriesEqual(cur.Categories, a.Categories):
 			fields["categories"] = FieldDiff{
 				Old: formatCategories(cur.Categories), New: formatCategories(a.Categories),
