@@ -132,12 +132,15 @@ type ParsedScript struct {
 
 // ParsedPolicy represents a policy from YAML.
 type ParsedPolicy struct {
-	Name             string   `yaml:"name"`
-	Description      string   `yaml:"description"`
-	Resolution       string   `yaml:"resolution"`
-	Query            string   `yaml:"query"`
-	Platform         string   `yaml:"platform"`
-	Critical         bool     `yaml:"critical"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Resolution  string `yaml:"resolution"`
+	Query       string `yaml:"query"`
+	Platform    string `yaml:"platform"`
+	Critical    bool   `yaml:"critical"`
+	// Type is "patch" for Fleet patch policies, whose query and platform
+	// Fleet generates from the maintained-app catalog; empty otherwise.
+	Type             string   `yaml:"type"`
 	LabelsIncludeAny []string `yaml:"labels_include_any"`
 	LabelsExcludeAny []string `yaml:"labels_exclude_any"`
 	SourceFile       string   `yaml:"-"`
