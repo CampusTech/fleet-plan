@@ -137,7 +137,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 			if _, ok := permissionErrors[e]; ok {
 				continue
 			}
-			errRows = append(errRows, fmt.Sprintf("| ⚠️ | %s | | | %s |", team, mdEscapeTableCell(e)))
+			errRows = append(errRows, fmt.Sprintf("| ⚠️ | %s | | | %s |", team, mdEscapeText(e)))
 		}
 	}
 
@@ -182,6 +182,13 @@ func mdCodeSpan(s string) string {
 		return "`" + s + "`"
 	}
 	return "`` " + s + " ``"
+}
+
+// mdEscapeText escapes plain (non-code) text for a table cell. Backslashes
+// are escaped first so an existing "\|" cannot cancel the pipe escape. Not for
+// code spans, where a backslash is literal.
+func mdEscapeText(s string) string {
+	return mdEscapeTableCell(strings.ReplaceAll(s, `\`, `\\`))
 }
 
 // mdEscapeTableCell escapes characters that break markdown table cells.

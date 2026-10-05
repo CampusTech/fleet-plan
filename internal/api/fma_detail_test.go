@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -55,3 +58,32 @@ func TestEnrichFleetAppScriptsFailureCause(t *testing.T) {
 		})
 	}
 }
+
+func TestDetailFailureReason(t *testing.T) {
+	timeoutErr := &url.Error{Op: "Get", URL: "u", Err: timeoutError{}}
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"http status", &HTTPError{StatusCode: 503, URL: "https://x/secret", Body: "body"}, "software title 7: HTTP 503"},
+		{"deadline", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), "software title 7: request timed out"},
+		{"net timeout", timeoutErr, "software title 7: request timed out"},
+		{"canceled", fmt.Errorf("wrapped: %w", context.Canceled), "software title 7: request canceled"},
+		{"no package", errNoSoftwarePackage, "software title 7 has no software package"},
+		{"other", errors.New("dial tcp 10.0.0.1:443: connection refused"), "software title 7: request failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detailFailureReason(7, tt.err); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }

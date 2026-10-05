@@ -162,6 +162,16 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantNone: []string{"\n## injected"},
 		},
 		{
+			// An existing backslash must not turn the pipe escape into a
+			// literal backslash followed by a cell separator.
+			name: "error cell backslash before pipe",
+			results: []diff.DiffResult{{
+				Team:   "T",
+				Errors: []string{`a \| b`},
+			}},
+			wantAll: []string{`a \\\| b`},
+		},
+		{
 			name: "labels as separate table with host counts",
 			results: []diff.DiffResult{{
 				Team: "Workstations",

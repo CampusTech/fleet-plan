@@ -95,3 +95,22 @@ func TestGetRetryStopsOnContextCancel(t *testing.T) {
 		t.Errorf("calls = %d, want 1", calls.Load())
 	}
 }
+
+// A Client built without NewClient (zero maxAttempts) still retries.
+func TestGetRetryDefaultAttempts(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	c := testClient(t, ts, "tok")
+	c.maxAttempts = 0
+	if err := c.get(context.Background(), "/x", nil, &struct{}{}); err == nil {
+		t.Fatal("expected error")
+	}
+	if calls.Load() != 3 {
+		t.Errorf("calls = %d, want 3", calls.Load())
+	}
+}
