@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -64,5 +65,23 @@ func TestGetLabelsDefinitionFields(t *testing.T) {
 	l := labels[0]
 	if l.Description != "d" || l.LabelMembershipType != "manual" || l.LabelType != "regular" {
 		t.Errorf("label = %+v", l)
+	}
+}
+
+// A malformed label scoping field must fail decoding, not be silently dropped.
+func TestLabelScopingUnmarshalErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		dst  any
+	}{
+		{"policy", &Policy{}},
+		{"profile", &Profile{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := json.Unmarshal([]byte(`{"labels_exclude_any":"exempt"}`), tt.dst); err == nil {
+				t.Error("expected error for non-array labels_exclude_any")
+			}
+		})
 	}
 }
