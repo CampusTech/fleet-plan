@@ -151,6 +151,17 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantNone: []string{"**WARNING**"},
 		},
 		{
+			// Warnings can carry server-provided text; it must not break the
+			// table or start new markdown lines.
+			name: "error cell escaped",
+			results: []diff.DiffResult{{
+				Team:   "T",
+				Errors: []string{"bad | cell\n## injected"},
+			}},
+			wantAll:  []string{`bad \| cell ## injected`},
+			wantNone: []string{"\n## injected"},
+		},
+		{
 			name: "labels as separate table with host counts",
 			results: []diff.DiffResult{{
 				Team: "Workstations",

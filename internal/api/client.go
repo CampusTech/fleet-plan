@@ -681,6 +681,28 @@ func (c *Client) GetSoftwareTitleDetail(ctx context.Context, titleID, teamID uin
 	return &resp.SoftwareTitle, nil
 }
 
+var errNoSoftwarePackage = errors.New("no software package")
+
+// detailFailureReason summarizes a title-detail failure for plan output,
+// which is posted to PR comments. It never includes the server URL or the
+// response body: both are server-controlled and may leak or inject markdown.
+func detailFailureReason(titleID uint, err error) string {
+	var httpErr *HTTPError
+	var netErr net.Error
+	switch {
+	case errors.As(err, &httpErr):
+		return fmt.Sprintf("software title %d: HTTP %d", titleID, httpErr.StatusCode)
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return fmt.Sprintf("software title %d: request timed out", titleID)
+	case errors.Is(err, context.Canceled):
+		return fmt.Sprintf("software title %d: request canceled", titleID)
+	case errors.Is(err, errNoSoftwarePackage):
+		return fmt.Sprintf("software title %d has no software package", titleID)
+	default:
+		return fmt.Sprintf("software title %d: request failed", titleID)
+	}
+}
+
 // EnrichFleetAppScripts fetches title details for FMAs that have a TitleID set
 // and populates their script content. Errors are non-fatal (scripts stay empty).
 func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp) {
@@ -694,7 +716,7 @@ func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp)
 		g.Go(func() error {
 			detail, err := c.GetSoftwareTitleDetail(gctx, apps[idx].TitleID, apps[idx].TeamID)
 			if err == nil && detail.SoftwarePackage == nil {
-				err = fmt.Errorf("software title %d has no software package", apps[idx].TitleID)
+				err = errNoSoftwarePackage
 			}
 			if err != nil {
 				// Record that the live values are unknown: treating them as
@@ -704,7 +726,7 @@ func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp)
 				apps[idx].DetailUnavailable = true
 				var httpErr *HTTPError
 				apps[idx].DetailForbidden = errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden
-				apps[idx].DetailError = err.Error()
+				apps[idx].DetailError = detailFailureReason(apps[idx].TitleID, err)
 				return nil
 			}
 			apps[idx].InstallScript = strings.TrimSpace(detail.SoftwarePackage.InstallScript)

@@ -137,7 +137,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 			if _, ok := permissionErrors[e]; ok {
 				continue
 			}
-			errRows = append(errRows, fmt.Sprintf("| ⚠️ | %s | | | %s |", team, e))
+			errRows = append(errRows, fmt.Sprintf("| ⚠️ | %s | | | %s |", team, mdEscapeTableCell(e)))
 		}
 	}
 

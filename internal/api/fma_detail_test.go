@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ func TestEnrichFleetAppScriptsFailureCause(t *testing.T) {
 		// isPermissionError also counts 404, but a missing title is not a
 		// permission problem and must not be reported as one.
 		{name: "not found", status: http.StatusNotFound, body: `{}`, wantErr: true},
-		{name: "server error", status: http.StatusInternalServerError, body: `{}`, wantErr: true},
+		{name: "server error", status: http.StatusInternalServerError, body: `{"message":"secret-body | [x](http://evil)"}`, wantErr: true},
 		{name: "no software package", status: http.StatusOK, body: `{"software_title":{"id":1}}`, wantErr: true},
 		{name: "ok", status: http.StatusOK, body: `{"software_title":{"id":1,"software_package":{"categories":["Browsers"]}}}`},
 	}
@@ -44,6 +45,12 @@ func TestEnrichFleetAppScriptsFailureCause(t *testing.T) {
 			}
 			if (a.DetailError != "") != tt.wantErr {
 				t.Errorf("DetailError = %q, want set=%v", a.DetailError, tt.wantErr)
+			}
+			// DetailError reaches PR comments: no server URL or response body.
+			for _, leak := range []string{ts.URL, "secret-body"} {
+				if strings.Contains(a.DetailError, leak) {
+					t.Errorf("DetailError %q leaks %q", a.DetailError, leak)
+				}
 			}
 		})
 	}
