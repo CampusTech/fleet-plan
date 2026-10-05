@@ -170,6 +170,31 @@ func TestRenderDiffJSON(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "label definition changes",
+			results: []diff.DiffResult{{
+				Team: "(global)",
+				LabelChanges: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{
+						Name:   "ddm-os-reminder-exempt",
+						Fields: map[string]diff.FieldDiff{"label_membership_type": {New: "manual"}},
+					}},
+					Modified: []diff.ResourceChange{{
+						Name:   "pilots",
+						Fields: map[string]diff.FieldDiff{"description": {Old: "old", New: "new"}},
+					}},
+				},
+			}},
+			check: func(t *testing.T, output JSONDiffOutput) {
+				lc := output.Teams[0].LabelChanges
+				if len(lc.Added) != 1 || lc.Added[0].Name != "ddm-os-reminder-exempt" {
+					t.Errorf("added: %+v", lc.Added)
+				}
+				if len(lc.Modified) != 1 || lc.Modified[0].Fields["description"].New != "new" {
+					t.Errorf("modified: %+v", lc.Modified)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -106,6 +106,9 @@ func renderTeamDiff(result diff.DiffResult, summary *DiffSummary, verbose bool) 
 	if !result.Scripts.IsEmpty() {
 		lines = append(lines, renderResourceDiff("Scripts", result.Scripts, summary, verbose))
 	}
+	if !result.LabelChanges.IsEmpty() {
+		lines = append(lines, renderResourceDiff("Labels", result.LabelChanges, summary, verbose))
+	}
 
 	for _, e := range result.Errors {
 		display := e

@@ -13,15 +13,16 @@ type JSONDiffOutput struct {
 
 // JSONTeamDiff is a single team's diff in JSON format.
 type JSONTeamDiff struct {
-	Team     string             `json:"team"`
-	Policies JSONResourceDiff   `json:"policies"`
-	Queries  JSONResourceDiff   `json:"queries"`
-	Software JSONResourceDiff   `json:"software"`
-	Profiles JSONResourceDiff   `json:"profiles"`
-	Scripts  JSONResourceDiff   `json:"scripts"`
-	Labels   JSONLabelResult    `json:"labels"`
-	Config   []JSONConfigChange `json:"config,omitempty"`
-	Errors   []string           `json:"errors"`
+	Team         string             `json:"team"`
+	Policies     JSONResourceDiff   `json:"policies"`
+	Queries      JSONResourceDiff   `json:"queries"`
+	Software     JSONResourceDiff   `json:"software"`
+	Profiles     JSONResourceDiff   `json:"profiles"`
+	Scripts      JSONResourceDiff   `json:"scripts"`
+	Labels       JSONLabelResult    `json:"labels"`
+	LabelChanges JSONResourceDiff   `json:"label_changes"` // label definitions; Labels is policy label validation
+	Config       []JSONConfigChange `json:"config,omitempty"`
+	Errors       []string           `json:"errors"`
 }
 
 // JSONConfigChange is a config change in JSON format.
@@ -75,15 +76,16 @@ func RenderDiffJSON(results []diff.DiffResult) (string, error) {
 
 	for _, r := range results {
 		teamDiff := JSONTeamDiff{
-			Team:     r.Team,
-			Policies: convertResourceDiff(r.Policies),
-			Queries:  convertResourceDiff(r.Queries),
-			Software: convertResourceDiff(r.Software),
-			Profiles: convertResourceDiff(r.Profiles),
-			Scripts:  convertResourceDiff(r.Scripts),
-			Labels:   convertLabels(r.Labels),
-			Config:   convertConfigChanges(r.Config),
-			Errors:   r.Errors,
+			Team:         r.Team,
+			Policies:     convertResourceDiff(r.Policies),
+			Queries:      convertResourceDiff(r.Queries),
+			Software:     convertResourceDiff(r.Software),
+			Profiles:     convertResourceDiff(r.Profiles),
+			Scripts:      convertResourceDiff(r.Scripts),
+			Labels:       convertLabels(r.Labels),
+			LabelChanges: convertResourceDiff(r.LabelChanges),
+			Config:       convertConfigChanges(r.Config),
+			Errors:       r.Errors,
 		}
 		if teamDiff.Errors == nil {
 			teamDiff.Errors = []string{}

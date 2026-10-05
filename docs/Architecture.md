@@ -95,16 +95,19 @@ Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched 
 |----------|-----------|-------------|
 | Config sections (global) | dot-path key | old/new value (skips `$VAR` placeholders) |
 | Team `settings:` | dot-path key | old/new value vs the team object from `GET /teams`; `secrets:` is never diffed |
-| Policies | `name` | query, description, resolution, platform, critical |
+| Policies | `name` | query, description, resolution, platform, critical, labels_include_any, labels_exclude_any |
 | Queries | `name` | query, interval, platform, logging |
 | Software packages | `referenced_yaml_path` | url, hash, self_service, categories |
 | Fleet-maintained apps | `slug` | self_service, categories (skipped when the title detail is unreadable), scripts |
 | App Store apps | `app_store_id` | self_service, categories |
-| Profiles | PayloadDisplayName | changed payload key paths (names only, never values) |
+| Profiles | PayloadDisplayName | changed payload key paths (names only, never values), labels_include_all, labels_include_any, labels_exclude_any |
 | Scripts | filename | line count diff (`+N/-N`, `~N` for single-line) |
+| Label definitions (global) | `name` | description, query, platform, label_membership_type (built-in and team-scoped labels skipped; only when `default.yml` defines labels; manual membership lists not compared) |
 | Labels | `name` (cross-ref) | valid/missing with host counts |
 
 Profile content is compared key by key. The profile list carries each stored profile's checksum, so a profile whose local file hashes to the same value is skipped without downloading anything; only the rest are fetched via `?alt=media`. Payload *values* are never rendered — profiles carry certificates, passwords, and enroll secrets, and the diff is posted to MRs. Keys whose local value references a Fleet variable (`$NAME` or `${NAME}`) are ignored, since Fleet substitutes them server-side and the stored value would never match. A value that merely contains a dollar sign is compared normally. Content for the profiles that do need comparing is downloaded in a single batch and reused by the baseline pass. Formats that cannot be flattened (Windows SyncML XML) fall back to the changed-file heuristic.
+
+Label scoping lists (`labels_include_any` etc.) are compared as sets: order is ignored and an omitted list equals an empty one. Fleet returns them as `{id, name}` objects; the client keeps only the names.
 
 Category names are normalized before comparison. Fleet reports them as display names with an emoji prefix (`🔐 Security`), while fleet-gitops YAML writes them plainly (`Security`); only leading symbols are stripped, so a category starting with a letter or digit (`1Password`) is untouched.
 

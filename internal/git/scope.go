@@ -10,11 +10,12 @@ import (
 )
 
 // fleetResourcePrefixes lists the directory prefixes for fleet-managed resources.
-var fleetResourcePrefixes = []string{"policies/", "queries/", "software/", "profiles/", "scripts/"}
+var fleetResourcePrefixes = []string{"policies/", "queries/", "software/", "profiles/", "scripts/", "lib/"}
 
 // Scope describes which parts of the repo are affected by a set of changed files.
 type Scope struct {
-	// IncludeGlobal is true when base.yml, an environment overlay, or labels/ changed.
+	// IncludeGlobal is true when base.yml, default.yml, an environment overlay,
+	// labels/, or a file referenced from default.yml changed.
 	IncludeGlobal bool
 	// Teams is the deduplicated list of affected team names.
 	Teams []string
@@ -38,7 +39,7 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 			continue
 		}
 		switch {
-		case f == "base.yml", f == envFile, strings.HasPrefix(f, "labels/") && !strings.HasSuffix(f, ".md"):
+		case f == "base.yml", f == "default.yml", f == envFile, strings.HasPrefix(f, "labels/") && !strings.HasSuffix(f, ".md"):
 			scope.IncludeGlobal = true
 
 		case isTeamYAML(f):
@@ -49,6 +50,9 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 			}
 
 		case isFleetResource(f):
+			if referencedByDefault(root, f) {
+				scope.IncludeGlobal = true
+			}
 			patterns := buildSearchPatterns(root, f)
 			for _, name := range teamsReferencingAny(root, patterns) {
 				if !teamsSeen[name] {
@@ -144,6 +148,13 @@ func teamsReferencingAny(root string, patterns []string) []string {
 		}
 	}
 	return names
+}
+
+// referencedByDefault reports whether the repo-root default.yml references f
+// (as "./"+f or f), meaning the change affects global config.
+func referencedByDefault(root, f string) bool {
+	content, err := os.ReadFile(filepath.Join(root, "default.yml"))
+	return err == nil && strings.Contains(string(content), f)
 }
 
 // readTeamName extracts the name field from a team YAML file.

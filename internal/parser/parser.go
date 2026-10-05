@@ -210,6 +210,10 @@ type ParsedProfile struct {
 	Platform   string `yaml:"-"` // inferred from file extension
 	Content    string `yaml:"-"` // raw file content, for content-level diffing
 	SourceFile string `yaml:"-"`
+	// Label scoping, copied from the profile reference in the team file.
+	LabelsIncludeAll []string `yaml:"-"`
+	LabelsIncludeAny []string `yaml:"-"`
+	LabelsExcludeAny []string `yaml:"-"`
 }
 
 // ParseError represents a parse/validation error with file context.
@@ -601,6 +605,10 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			Platform:   "darwin",
 			Content:    readProfileContent(resolved),
 			SourceFile: path,
+
+			LabelsIncludeAll: ref.LabelsIncludeAll,
+			LabelsIncludeAny: ref.LabelsIncludeAny,
+			LabelsExcludeAny: ref.LabelsExcludeAny,
 		})
 	}
 	// Windows profiles may be listed under custom_settings (older spelling) or
@@ -627,6 +635,10 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			Platform:   "windows",
 			Content:    readProfileContent(resolved),
 			SourceFile: path,
+
+			LabelsIncludeAll: ref.LabelsIncludeAll,
+			LabelsIncludeAny: ref.LabelsIncludeAny,
+			LabelsExcludeAny: ref.LabelsExcludeAny,
 		})
 	}
 
@@ -652,6 +664,10 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 			Platform:   inferApplePlatform(ref.Path),
 			Content:    readProfileContent(resolved),
 			SourceFile: path,
+
+			LabelsIncludeAll: ref.LabelsIncludeAll,
+			LabelsIncludeAny: ref.LabelsIncludeAny,
+			LabelsExcludeAny: ref.LabelsExcludeAny,
 		})
 	}
 
