@@ -3230,6 +3230,8 @@ func (f *fakeScriptEnricher) EnrichFleetAppScripts(_ context.Context, apps []api
 	for i := range apps {
 		if f.detailUnavailable {
 			apps[i].DetailUnavailable = true
+			apps[i].DetailForbidden = true
+			apps[i].DetailError = "HTTP 403"
 			continue
 		}
 		if cats, ok := f.categories[apps[i].Slug]; ok {
