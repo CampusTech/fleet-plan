@@ -554,9 +554,12 @@ func TestDiffLabelValidationSkipsUnchangedPolicies(t *testing.T) {
 	// Its labels should NOT appear in the label validation output.
 	current := &api.FleetState{
 		Teams: []api.Team{{
-			ID:       1,
-			Name:     "T",
-			Policies: []api.Policy{{Name: "Unchanged", Query: "SELECT 1;", Platform: "darwin"}},
+			ID:   1,
+			Name: "T",
+			Policies: []api.Policy{{
+				Name: "Unchanged", Query: "SELECT 1;", Platform: "darwin",
+				LabelsIncludeAny: []string{"Some Label"},
+			}},
 		}},
 		Labels: []api.Label{{Name: "Some Label", HostCount: 10}},
 	}
@@ -3723,5 +3726,41 @@ func TestDiffFleetMaintainedAppCategoriesUnreadable(t *testing.T) {
 	}
 	if !noted {
 		t.Errorf("expected a note that categories could not be read, got %v", r.Errors)
+	}
+}
+
+func TestDiffLabelsEdgeCases(t *testing.T) {
+	teamID := uint(3)
+	tests := []struct {
+		name    string
+		current []api.Label
+		prop    []parser.ParsedLabel
+		want    string // rdSummary
+	}{
+		{
+			name:    "team-scoped label is not deleted",
+			current: []api.Label{{Name: "x", TeamID: &teamID}},
+			prop:    []parser.ParsedLabel{{Name: "y", Query: "SELECT 1;"}},
+			want:    "+1 ~0 -0",
+		},
+		{
+			name:    "omitted membership type means dynamic",
+			current: []api.Label{{Name: "x", Query: "SELECT 1;", LabelMembershipType: "dynamic"}},
+			prop:    []parser.ParsedLabel{{Name: "x", Query: "SELECT  1;"}},
+			want:    "+0 ~0 -0",
+		},
+		{
+			name:    "membership type change",
+			current: []api.Label{{Name: "x", LabelMembershipType: "dynamic", Query: "SELECT 1;"}},
+			prop:    []parser.ParsedLabel{{Name: "x", LabelMembershipType: "manual"}},
+			want:    "+0 ~1 -0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rdSummary(diffLabels(tt.current, tt.prop)); got != tt.want {
+				t.Errorf("got %s, want %s", got, tt.want)
+			}
+		})
 	}
 }

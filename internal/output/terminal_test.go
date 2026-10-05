@@ -189,6 +189,23 @@ func TestRenderDiffTerminal(t *testing.T) {
 			wantAll:  []string{"Labels referenced:", "label-1"},
 			wantNone: []string{"unique labels"},
 		},
+		{
+			name: "label definition changes",
+			results: []diff.DiffResult{{
+				Team: "(global)",
+				LabelChanges: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{
+						Name:   "ddm-os-reminder-exempt",
+						Fields: map[string]diff.FieldDiff{"label_membership_type": {New: "manual"}},
+					}},
+					Modified: []diff.ResourceChange{{
+						Name:   "pilots",
+						Fields: map[string]diff.FieldDiff{"description": {Old: "old", New: "new"}},
+					}},
+				},
+			}},
+			wantAll: []string{"Global (default.yml)", "Labels:", "ddm-os-reminder-exempt", "pilots", "1 added", "1 modified"},
+		},
 	}
 
 	for _, tt := range tests {

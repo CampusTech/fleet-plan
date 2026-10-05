@@ -261,6 +261,40 @@ type Policy struct {
 	LabelsExcludeAny []string `json:"-"`
 }
 
+// labelIdent is how Fleet reports a label scoping entry on policies and
+// profiles: {"id":7,"name":"pilots"}. fleet-gitops refers to labels by name.
+type labelIdent struct {
+	Name string `json:"name"`
+}
+
+func labelNames(idents []labelIdent) []string {
+	if len(idents) == 0 {
+		return nil
+	}
+	names := make([]string, len(idents))
+	for i, l := range idents {
+		names[i] = l.Name
+	}
+	return names
+}
+
+// UnmarshalJSON decodes Fleet's label scoping objects into label names.
+func (p *Policy) UnmarshalJSON(b []byte) error {
+	type plain Policy
+	var raw struct {
+		plain
+		LabelsIncludeAny []labelIdent `json:"labels_include_any"`
+		LabelsExcludeAny []labelIdent `json:"labels_exclude_any"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*p = Policy(raw.plain)
+	p.LabelsIncludeAny = labelNames(raw.LabelsIncludeAny)
+	p.LabelsExcludeAny = labelNames(raw.LabelsExcludeAny)
+	return nil
+}
+
 // Query represents a Fleet query.
 type Query struct {
 	ID       uint   `json:"id"`
@@ -319,11 +353,15 @@ type SoftwareTitleDetailPackage struct {
 
 // Label represents a Fleet label.
 type Label struct {
-	ID        uint   `json:"id"`
-	Name      string `json:"name"`
-	Query     string `json:"query"`
-	Platform  string `json:"platform"`
-	HostCount uint   `json:"host_count"`
+	ID                  uint   `json:"id"`
+	Name                string `json:"name"`
+	Description         string `json:"description"`
+	Query               string `json:"query"`
+	Platform            string `json:"platform"`
+	HostCount           uint   `json:"host_count"`
+	LabelMembershipType string `json:"label_membership_type"` // "dynamic", "manual", "host_vitals"
+	LabelType           string `json:"label_type"`            // "regular" or "builtin"
+	TeamID              *uint  `json:"team_id"`               // nil for global labels
 }
 
 // Profile represents an MDM configuration profile.
@@ -337,6 +375,29 @@ type Profile struct {
 	Checksum string `json:"checksum"`
 	// Content is the raw profile, populated on demand by GetProfileContent.
 	Content string `json:"-"`
+	// Label scoping, normalized to names from Fleet's {"id","name"} objects.
+	LabelsIncludeAll []string `json:"-"`
+	LabelsIncludeAny []string `json:"-"`
+	LabelsExcludeAny []string `json:"-"`
+}
+
+// UnmarshalJSON decodes Fleet's label scoping objects into label names.
+func (p *Profile) UnmarshalJSON(b []byte) error {
+	type plain Profile
+	var raw struct {
+		plain
+		LabelsIncludeAll []labelIdent `json:"labels_include_all"`
+		LabelsIncludeAny []labelIdent `json:"labels_include_any"`
+		LabelsExcludeAny []labelIdent `json:"labels_exclude_any"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*p = Profile(raw.plain)
+	p.LabelsIncludeAll = labelNames(raw.LabelsIncludeAll)
+	p.LabelsIncludeAny = labelNames(raw.LabelsIncludeAny)
+	p.LabelsExcludeAny = labelNames(raw.LabelsExcludeAny)
+	return nil
 }
 
 // Script represents a Fleet script assigned to a team.

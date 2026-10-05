@@ -16,12 +16,13 @@ type MarkdownOptions struct {
 }
 
 // HasChanges returns true if any DiffResult contains additions, modifications,
-// deletions, config changes, errors, or missing labels.
+// deletions (label definitions included), config changes, errors, or missing
+// labels.
 func HasChanges(results []diff.DiffResult) bool {
 	for _, r := range results {
 		if !r.Policies.IsEmpty() || !r.Queries.IsEmpty() ||
 			!r.Software.IsEmpty() || !r.Profiles.IsEmpty() ||
-			!r.Scripts.IsEmpty() ||
+			!r.Scripts.IsEmpty() || !r.LabelChanges.IsEmpty() ||
 			len(r.Config) > 0 || len(r.Errors) > 0 || len(r.Labels.Missing) > 0 {
 			return true
 		}
@@ -102,6 +103,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 			{"Software", result.Software},
 			{"Profile", result.Profiles},
 			{"Script", result.Scripts},
+			{"Label", result.LabelChanges},
 		}
 
 		for _, rt := range types {

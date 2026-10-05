@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -31,6 +33,7 @@ type DiffResult struct {
 	Profiles              ResourceDiff
 	Scripts               ResourceDiff
 	Labels                LabelValidation
+	LabelChanges          ResourceDiff   // label definitions (global scope only)
 	Config                []ConfigChange // org_settings, agent_options, controls diffs
 	Errors                []string
 	SkippedConfigSections []string // config sections absent from API (e.g. "agent_options")
@@ -325,6 +328,13 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 		// Diff global queries
 		globalResult.Queries = diffQueries(current.GlobalQueries, proposed.Global.Queries)
 
+		// Diff label definitions. Only when the repo manages labels at all, or
+		// every label in Fleet would show as a deletion. A base branch that
+		// managed labels counts, so removing the last one is still reported.
+		if len(proposed.Labels) > 0 || (cfg.baseline != nil && len(cfg.baseline.Labels) > 0) {
+			globalResult.LabelChanges = diffLabels(current.Labels, proposed.Labels)
+		}
+
 		vlog(cfg.verbose, "(global) MR diff: policies=%s queries=%s config=%d",
 			rdSummary(globalResult.Policies), rdSummary(globalResult.Queries), len(globalResult.Config))
 
@@ -345,6 +355,10 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			globalResult.Config = subtractConfigChanges(globalResult.Config, baseConfig)
 			globalResult.Policies = subtractResourceDiff(globalResult.Policies, basePolicies)
 			globalResult.Queries = subtractResourceDiff(globalResult.Queries, baseQueries)
+			if len(cfg.baseline.Labels) > 0 {
+				globalResult.LabelChanges = subtractResourceDiff(globalResult.LabelChanges,
+					diffLabels(current.Labels, cfg.baseline.Labels))
+			}
 
 			vlog(cfg.verbose, "(global) after subtraction: policies=%s queries=%s config=%d",
 				rdSummary(globalResult.Policies), rdSummary(globalResult.Queries), len(globalResult.Config))
@@ -734,6 +748,8 @@ func diffPolicies(current []api.Policy, proposed []parser.ParsedPolicy) Resource
 			if p.Resolution != "" {
 				fields["resolution"] = FieldDiff{New: normalizeWS(p.Resolution)}
 			}
+			addLabelScope(fields, "labels_include_any", nil, p.LabelsIncludeAny, true)
+			addLabelScope(fields, "labels_exclude_any", nil, p.LabelsExcludeAny, true)
 			diff.Added = append(diff.Added, ResourceChange{Name: p.Name, Fields: fields})
 			continue
 		}
@@ -757,6 +773,8 @@ func diffPolicies(current []api.Policy, proposed []parser.ParsedPolicy) Resource
 		if cur.Critical != p.Critical {
 			fields["critical"] = FieldDiff{Old: fmt.Sprint(cur.Critical), New: fmt.Sprint(p.Critical)}
 		}
+		addLabelScope(fields, "labels_include_any", cur.LabelsIncludeAny, p.LabelsIncludeAny, false)
+		addLabelScope(fields, "labels_exclude_any", cur.LabelsExcludeAny, p.LabelsExcludeAny, false)
 
 		if len(fields) > 0 {
 			diff.Modified = append(diff.Modified, ResourceChange{
@@ -839,6 +857,103 @@ func diffQueries(current []api.Query, proposed []parser.ParsedQuery) ResourceDif
 	for _, cur := range current {
 		if !proposedNames[cur.Name] {
 			diff.Deleted = append(diff.Deleted, ResourceChange{Name: cur.Name})
+		}
+	}
+
+	return diff
+}
+
+// addLabelScope records a label scoping field (labels_include_any, ...) when
+// old and new differ as sets. Order is irrelevant to Fleet; nil equals empty.
+// For an added resource only the new side is set, and only when non-empty.
+func addLabelScope(fields map[string]FieldDiff, key string, old, new []string, added bool) {
+	o, n := sortedCategories(old), sortedCategories(new)
+	if slices.Equal(o, n) {
+		return
+	}
+	if added {
+		fields[key] = FieldDiff{New: formatCategories(new), IsSlice: true, NewSlice: n}
+		return
+	}
+	fields[key] = FieldDiff{
+		Old: formatCategories(old), New: formatCategories(new),
+		IsSlice: true, OldSlice: o, NewSlice: n,
+	}
+}
+
+// diffLabels compares label definitions, matched by name. Built-in labels
+// (macOS, All Hosts, ...) and team-scoped labels are never in default.yml, so
+// they are left out rather than reported as deletions.
+//
+// ponytail: manual label membership (the hosts list) is not compared; Fleet
+// only returns it from a per-label GET. Fetch /labels/:id when that matters.
+func diffLabels(current []api.Label, proposed []parser.ParsedLabel) ResourceDiff {
+	var diff ResourceDiff
+
+	membership := func(t string) string {
+		if t == "" {
+			return "dynamic" // Fleet's default when the YAML omits it
+		}
+		return t
+	}
+
+	managed := func(l api.Label) bool { return l.LabelType != "builtin" && l.TeamID == nil }
+
+	currentMap := make(map[string]api.Label)
+	for _, l := range current {
+		if managed(l) {
+			currentMap[l.Name] = l
+		}
+	}
+
+	proposedNames := make(map[string]bool)
+	for _, l := range proposed {
+		proposedNames[l.Name] = true
+		cur, exists := currentMap[l.Name]
+		if !exists {
+			fields := map[string]FieldDiff{
+				"label_membership_type": {New: membership(l.LabelMembershipType)},
+			}
+			if l.Query != "" {
+				fields["query"] = FieldDiff{New: normalizeWS(l.Query)}
+			}
+			if l.Description != "" {
+				fields["description"] = FieldDiff{New: normalizeWS(l.Description)}
+			}
+			if l.Platform != "" {
+				fields["platform"] = FieldDiff{New: l.Platform}
+			}
+			diff.Added = append(diff.Added, ResourceChange{Name: l.Name, Fields: fields})
+			continue
+		}
+
+		fields := make(map[string]FieldDiff)
+		if normalizeWS(cur.Description) != normalizeWS(l.Description) {
+			fields["description"] = FieldDiff{Old: normalizeWS(cur.Description), New: normalizeWS(l.Description)}
+		}
+		if normalizeWS(cur.Query) != normalizeWS(l.Query) {
+			fields["query"] = FieldDiff{Old: normalizeWS(cur.Query), New: normalizeWS(l.Query)}
+		}
+		if cur.Platform != l.Platform {
+			fields["platform"] = FieldDiff{Old: cur.Platform, New: l.Platform}
+		}
+		if membership(cur.LabelMembershipType) != membership(l.LabelMembershipType) {
+			fields["label_membership_type"] = FieldDiff{
+				Old: membership(cur.LabelMembershipType), New: membership(l.LabelMembershipType),
+			}
+		}
+		if len(fields) > 0 {
+			diff.Modified = append(diff.Modified, ResourceChange{Name: l.Name, Fields: fields, HostCount: cur.HostCount})
+		}
+	}
+
+	for _, l := range current {
+		if managed(l) && !proposedNames[l.Name] {
+			warning := ""
+			if l.HostCount > 0 {
+				warning = fmt.Sprintf("will delete label applied to %d hosts", l.HostCount)
+			}
+			diff.Deleted = append(diff.Deleted, ResourceChange{Name: l.Name, HostCount: l.HostCount, Warning: warning})
 		}
 	}
 
@@ -1468,27 +1583,52 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 			if p.Path != "" {
 				fields["path"] = FieldDiff{New: p.Path}
 			}
+			addProfileLabelScope(fields, api.Profile{}, p, true)
 			diff.Added = append(diff.Added, ResourceChange{
 				Name:   name,
 				Fields: fields,
 			})
-		} else if change, conclusive := profileContentChange(currentMap[name], p); conclusive {
+			continue
+		}
+
+		cur := currentMap[name]
+		var change *ResourceChange
+		if c, conclusive := profileContentChange(cur, p); conclusive {
 			// Content was compared: trust it over the git signal, which only
 			// says the file was touched, not that anything meaningful changed.
-			if change != nil {
-				diff.Modified = append(diff.Modified, *change)
-			}
+			change = c
 		} else if changedSet[p.Path] {
 			// Content comparison was unavailable (no enricher, unreadable file,
 			// or a format we cannot flatten). Fall back to the git signal: the
 			// profile file changed in this MR, so report it as modified without
 			// naming keys.
-			diff.Modified = append(diff.Modified, ResourceChange{
+			change = &ResourceChange{
 				Name: name,
 				Fields: map[string]FieldDiff{
 					"path": {New: p.Path},
 				},
-			})
+			}
+		}
+		// Label scoping lives in the team file, not the profile, so it is
+		// compared regardless of what the content check concluded.
+		labelFields := make(map[string]FieldDiff)
+		addProfileLabelScope(labelFields, cur, p, false)
+		if len(labelFields) > 0 {
+			if change == nil {
+				change = &ResourceChange{Name: name}
+			}
+			if change.Fields == nil {
+				change.Fields = make(map[string]FieldDiff)
+			}
+			// Renderers show Warning only when Fields is empty, so carry the
+			// content summary over as a field.
+			if change.Warning != "" {
+				change.Fields["content"] = FieldDiff{New: change.Warning}
+			}
+			maps.Copy(change.Fields, labelFields)
+		}
+		if change != nil {
+			diff.Modified = append(diff.Modified, *change)
 		}
 	}
 
@@ -1501,6 +1641,14 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 	}
 
 	return diff, warnings
+}
+
+// addProfileLabelScope records differences in a profile's three label scoping
+// fields.
+func addProfileLabelScope(fields map[string]FieldDiff, cur api.Profile, p parser.ParsedProfile, added bool) {
+	addLabelScope(fields, "labels_include_all", cur.LabelsIncludeAll, p.LabelsIncludeAll, added)
+	addLabelScope(fields, "labels_include_any", cur.LabelsIncludeAny, p.LabelsIncludeAny, added)
+	addLabelScope(fields, "labels_exclude_any", cur.LabelsExcludeAny, p.LabelsExcludeAny, added)
 }
 
 // fetchProfileContents downloads, in one batch, the stored content of every

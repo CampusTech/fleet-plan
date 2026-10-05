@@ -334,6 +334,28 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantAll:  []string{"..."},
 			wantNone: []string{"SELECT 1 FROM programs"},
 		},
+		{
+			name: "label definition changes",
+			results: []diff.DiffResult{{
+				Team: "(global)",
+				LabelChanges: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{
+						Name:   "ddm-os-reminder-exempt",
+						Fields: map[string]diff.FieldDiff{"label_membership_type": {New: "manual"}},
+					}},
+					Modified: []diff.ResourceChange{{
+						Name:   "pilots",
+						Fields: map[string]diff.FieldDiff{"description": {Old: "old", New: "new"}},
+					}},
+				},
+			}},
+			wantAll: []string{
+				"| ADDED | Global | Label | **ddm-os-reminder-exempt** |",
+				"| MODIFIED | Global | Label | **pilots** |",
+				"**1 added, 1 modified**",
+			},
+			wantNone: []string{"No changes detected"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -480,6 +502,10 @@ func TestHasChanges(t *testing.T) {
 		{name: "missing labels", results: []diff.DiffResult{{
 			Team:   "T",
 			Labels: diff.LabelValidation{Missing: []diff.LabelRef{{Name: "x"}}},
+		}}, want: true},
+		{name: "label definition change", results: []diff.DiffResult{{
+			Team:         "(global)",
+			LabelChanges: diff.ResourceDiff{Deleted: []diff.ResourceChange{{Name: "gone"}}},
 		}}, want: true},
 		{name: "valid labels only is not a change", results: []diff.DiffResult{{
 			Team:   "T",
