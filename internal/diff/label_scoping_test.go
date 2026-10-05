@@ -135,3 +135,43 @@ func TestDiffGlobalLabelDefinitions(t *testing.T) {
 		t.Errorf("deleted: want [gone], got %+v", lc.Deleted)
 	}
 }
+
+// A profile whose content and label scoping both change must keep the content
+// summary: renderers only show Warning when Fields is empty.
+func TestDiffProfileContentAndLabelChange(t *testing.T) {
+	cur := api.Profile{Name: "DOR", Content: `<plist><dict><key>a</key><string>1</string></dict></plist>`}
+	prop := parser.ParsedProfile{
+		Name: "DOR", Path: "/r/dor.mobileconfig", LabelsExcludeAny: []string{"exempt"},
+		Content: `<plist><dict><key>a</key><string>2</string></dict></plist>`,
+	}
+	rd, _ := diffProfiles([]api.Profile{cur}, []parser.ParsedProfile{prop}, nil, nil)
+	if len(rd.Modified) != 1 {
+		t.Fatalf("expected 1 modified profile, got %+v", rd)
+	}
+	f := rd.Modified[0].Fields
+	if _, ok := f["labels_exclude_any"]; !ok {
+		t.Errorf("missing labels_exclude_any: %v", f)
+	}
+	if c, ok := f["content"]; !ok || c.New == "" {
+		t.Errorf("content summary lost: %v", f)
+	}
+}
+
+// Removing the last label from default.yml must still report the deletion
+// when the base branch managed labels.
+func TestDiffGlobalLabelsLastRemoved(t *testing.T) {
+	current := &api.FleetState{
+		Config: map[string]any{},
+		Labels: []api.Label{{ID: 1, Name: "exempt", LabelMembershipType: "manual", HostCount: 1}},
+	}
+	proposed := &parser.ParsedRepo{Global: &parser.ParsedGlobal{}}
+	baseline := &parser.ParsedRepo{
+		Global: &parser.ParsedGlobal{},
+		Labels: []parser.ParsedLabel{{Name: "exempt", LabelMembershipType: "manual"}},
+	}
+
+	global := findTeam(t, Diff(current, proposed, nil, nil, WithBaseline(baseline)), "(global)")
+	if d := global.LabelChanges.Deleted; len(d) != 1 || d[0].Name != "exempt" {
+		t.Errorf("deleted: want [exempt], got %+v", d)
+	}
+}

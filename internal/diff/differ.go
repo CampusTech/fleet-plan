@@ -329,8 +329,9 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 		globalResult.Queries = diffQueries(current.GlobalQueries, proposed.Global.Queries)
 
 		// Diff label definitions. Only when the repo manages labels at all, or
-		// every label in Fleet would show as a deletion.
-		if len(proposed.Labels) > 0 {
+		// every label in Fleet would show as a deletion. A base branch that
+		// managed labels counts, so removing the last one is still reported.
+		if len(proposed.Labels) > 0 || (cfg.baseline != nil && len(cfg.baseline.Labels) > 0) {
 			globalResult.LabelChanges = diffLabels(current.Labels, proposed.Labels)
 		}
 
@@ -1618,6 +1619,11 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, change
 			}
 			if change.Fields == nil {
 				change.Fields = make(map[string]FieldDiff)
+			}
+			// Renderers show Warning only when Fields is empty, so carry the
+			// content summary over as a field.
+			if change.Warning != "" {
+				change.Fields["content"] = FieldDiff{New: change.Warning}
 			}
 			maps.Copy(change.Fields, labelFields)
 		}
