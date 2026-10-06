@@ -4,6 +4,7 @@
 package diff
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1047,7 +1048,8 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) (Res
 	var warnings []string
 	// Set when at least one Fleet-maintained app's title detail could not be
 	// read, so the skip is reported once rather than per app.
-	var detailUnavailable bool
+	var detailForbidden bool
+	var detailErr string
 
 	// -------- Packages (keyed by referenced_yaml_path) --------
 	// The display name is always the base path; the map key may additionally
@@ -1189,10 +1191,14 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) (Res
 		// could not be read, the live value is unknown, not empty: comparing
 		// it would report the same change on every run.
 		switch {
-		case cur.DetailUnavailable:
-			detailUnavailable = true
 		// An omitted categories key (nil) leaves Fleet's categories untouched.
 		case a.Categories == nil:
+		case cur.DetailForbidden:
+			detailForbidden = true
+		case cur.DetailUnavailable:
+			if detailErr == "" {
+				detailErr = cmp.Or(cur.DetailError, "unknown error")
+			}
 		case !categoriesEqual(cur.Categories, a.Categories):
 			fields["categories"] = FieldDiff{
 				Old: formatCategories(cur.Categories), New: formatCategories(a.Categories),
@@ -1291,9 +1297,13 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) (Res
 	}
 
 	sortResourceChanges(&rd)
-	if detailUnavailable {
+	if detailForbidden {
 		warnings = append(warnings,
 			"fleet-maintained app categories not diffed: API token lacks permission to read software title details")
+	}
+	if detailErr != "" {
+		warnings = append(warnings,
+			"fleet-maintained app categories not diffed: could not read software title details: "+detailErr)
 	}
 
 	return rd, warnings

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,9 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+
+	maxAttempts  int           // GET attempts before giving up; <= 0 means 3
+	retryBackoff time.Duration // linear backoff unit between attempts
 }
 
 // NewClient creates a new read-only Fleet API client.
@@ -50,16 +54,44 @@ func NewClient(baseURL, token string) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		maxAttempts:  3,
+		retryBackoff: 2 * time.Second,
 	}, nil
 }
 
-// get performs a GET request and decodes JSON into dest.
+// get performs a GET request and decodes JSON into dest. Transient failures
+// (client timeout, 429, 502, 503, 504) are retried with linear backoff:
+// Cloud Run backends such as fleet-api-bulk scale to zero and can take longer
+// than the client timeout to cold start.
 func (c *Client) get(ctx context.Context, path string, query url.Values, dest any) error {
 	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
 
+	attempts := c.maxAttempts
+	if attempts <= 0 {
+		attempts = 3
+	}
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = c.getOnce(ctx, u, path, dest)
+		if err == nil || attempt >= attempts || !retryable(ctx, err) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("request to %s: %w", path, ctx.Err())
+		case <-time.After(c.retryBackoff * time.Duration(attempt)):
+		}
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+		return fmt.Errorf("request to %s: %w (last error: %v)", path, ctxErr, err)
+	}
+	return err
+}
+
+func (c *Client) getOnce(ctx context.Context, u, path string, dest any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
@@ -87,6 +119,25 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, dest an
 	}
 
 	return nil
+}
+
+// retryable reports whether a failed GET is worth retrying. The caller's ctx
+// being done is never retryable; a timeout then can only be the http.Client's.
+func retryable(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case http.StatusTooManyRequests, http.StatusBadGateway,
+			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout() || errors.Is(err, context.DeadlineExceeded)
 }
 
 // HTTPError represents a non-200 HTTP response.
@@ -224,10 +275,15 @@ type TeamFleetApp struct {
 	PreInstallQuery   string   `json:"-"`
 	PostInstallScript string   `json:"-"`
 	// DetailUnavailable is set when the software title detail could not be
-	// read, which a GitOps-scoped token cannot do (403). Categories and
+	// read (any error, or a title with no software package). Categories and
 	// scripts are then unknown rather than empty, and must not be diffed as
 	// though Fleet had none.
 	DetailUnavailable bool `json:"-"`
+	// DetailForbidden is set when that failure was a 403, i.e. the token
+	// lacks access to the title detail endpoint.
+	DetailForbidden bool `json:"-"`
+	// DetailError is the reason the detail could not be read.
+	DetailError string `json:"-"`
 }
 
 // TeamAppStoreApp is a VPP App Store app assigned to a team.
@@ -625,6 +681,28 @@ func (c *Client) GetSoftwareTitleDetail(ctx context.Context, titleID, teamID uin
 	return &resp.SoftwareTitle, nil
 }
 
+var errNoSoftwarePackage = errors.New("no software package")
+
+// detailFailureReason summarizes a title-detail failure for plan output,
+// which is posted to PR comments. It never includes the server URL or the
+// response body: both are server-controlled and may leak or inject markdown.
+func detailFailureReason(titleID uint, err error) string {
+	var httpErr *HTTPError
+	var netErr net.Error
+	switch {
+	case errors.As(err, &httpErr):
+		return fmt.Sprintf("software title %d: HTTP %d", titleID, httpErr.StatusCode)
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return fmt.Sprintf("software title %d: request timed out", titleID)
+	case errors.Is(err, context.Canceled):
+		return fmt.Sprintf("software title %d: request canceled", titleID)
+	case errors.Is(err, errNoSoftwarePackage):
+		return fmt.Sprintf("software title %d has no software package", titleID)
+	default:
+		return fmt.Sprintf("software title %d: request failed", titleID)
+	}
+}
+
 // EnrichFleetAppScripts fetches title details for FMAs that have a TitleID set
 // and populates their script content. Errors are non-fatal (scripts stay empty).
 func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp) {
@@ -637,11 +715,18 @@ func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp)
 		idx := i
 		g.Go(func() error {
 			detail, err := c.GetSoftwareTitleDetail(gctx, apps[idx].TitleID, apps[idx].TeamID)
-			if err != nil || detail.SoftwarePackage == nil {
-				// Record that the live values are unknown. A GitOps-scoped
-				// token gets 403 here, and treating that as "no categories"
-				// reported a change on every run.
+			if err == nil && detail.SoftwarePackage == nil {
+				err = errNoSoftwarePackage
+			}
+			if err != nil {
+				// Record that the live values are unknown: treating them as
+				// "no categories" reported a change on every run. Only a
+				// 403 is a permission problem; a 404 here means the title
+				// went missing (e.g. mid-deploy), not a token issue.
 				apps[idx].DetailUnavailable = true
+				var httpErr *HTTPError
+				apps[idx].DetailForbidden = errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden
+				apps[idx].DetailError = detailFailureReason(apps[idx].TitleID, err)
 				return nil
 			}
 			apps[idx].InstallScript = strings.TrimSpace(detail.SoftwarePackage.InstallScript)

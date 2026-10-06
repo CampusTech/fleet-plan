@@ -54,7 +54,7 @@ flowchart LR
 
 ## API client
 
-`FetchAll` parallelizes all GET requests via `errgroup`. When `default.yml` has global sections, it also fetches `/config`, global policies, and global queries. HTTPS is enforced by default (`FLEET_PLAN_INSECURE=1` to override for local dev).
+`FetchAll` parallelizes all GET requests via `errgroup`. When `default.yml` has global sections, it also fetches `/config`, global policies, and global queries. HTTPS is enforced by default (`FLEET_PLAN_INSECURE=1` to override for local dev). Each request has a 30s timeout; client timeouts and 429/502/503/504 are retried up to 3 attempts with linear backoff (2s, 4s) so a scaled-to-zero Cloud Run backend can cold start. Other errors, and a cancelled context, fail immediately.
 
 See [API Endpoints](API-Endpoints.md) for the full list.
 

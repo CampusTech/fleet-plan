@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testClient creates a Client pointing at the test server.
@@ -19,6 +20,7 @@ func testClient(t *testing.T, ts *httptest.Server, token string) *Client {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
+	c.retryBackoff = time.Millisecond // keep retried 429/5xx cases fast
 	return c
 }
 

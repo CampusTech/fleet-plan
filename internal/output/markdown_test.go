@@ -151,6 +151,27 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantNone: []string{"**WARNING**"},
 		},
 		{
+			// Warnings can carry server-provided text; it must not break the
+			// table or start new markdown lines.
+			name: "error cell escaped",
+			results: []diff.DiffResult{{
+				Team:   "T",
+				Errors: []string{"bad | cell\n## injected"},
+			}},
+			wantAll:  []string{`bad \| cell ## injected`},
+			wantNone: []string{"\n## injected"},
+		},
+		{
+			// An existing backslash must not turn the pipe escape into a
+			// literal backslash followed by a cell separator.
+			name: "error cell backslash before pipe",
+			results: []diff.DiffResult{{
+				Team:   "T",
+				Errors: []string{`a \| b`},
+			}},
+			wantAll: []string{`a \\\| b`},
+		},
+		{
 			name: "labels as separate table with host counts",
 			results: []diff.DiffResult{{
 				Team: "Workstations",
