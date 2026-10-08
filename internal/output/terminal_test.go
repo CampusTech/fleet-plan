@@ -380,6 +380,7 @@ func TestRenderChangeList(t *testing.T) {
 			wantAll: []string{"~", "ChangedItem", "key:"},
 		},
 		{name: "deleted with host count", items: []diff.ResourceChange{{Name: "CriticalPolicy", HostCount: 500}}, changeType: "deleted", wantAll: []string{"CriticalPolicy", "500 hosts"}},
+		{name: "drift is tagged", items: []diff.ResourceChange{{Name: "Drifted", Drift: true}}, changeType: "deleted", wantAll: []string{"- Drifted (not from this change)"}},
 		{name: "deleted with warning", items: []diff.ResourceChange{{Name: "DangerPolicy", Warning: "affects production hosts"}}, changeType: "deleted", wantAll: []string{"DangerPolicy", "affects production hosts"}},
 		{
 			name:       "added verbose shows fields",

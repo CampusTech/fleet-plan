@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -147,7 +148,14 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	// Parse baseline (base branch) for subtraction when in --git mode.
 	var baseline *parser.ParsedRepo
 	if flagGit && len(changedFiles) > 0 && ci.DiffBaseSHA != "" {
-		baseRoot, baseCleanup, err := git.CheckoutBaseline(flagRepo, ci.DiffBaseSHA, changedFiles)
+		var globalFiles []string
+		if includeGlobal {
+			globalFiles = []string{"default.yml"}
+			if flagBase != "" {
+				globalFiles = []string{flagBase}
+			}
+		}
+		baseRoot, baseCleanup, err := git.CheckoutBaseline(flagRepo, ci.DiffBaseSHA, baselineFiles(flagRepo, changedFiles, repo.Teams, globalFiles))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not extract baseline (%v), skipping baseline subtraction\n", err)
 		} else {
@@ -239,6 +247,30 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 // hasNoTeam reports whether the repo configures Fleet's "hosts on no team"
 // bucket. Fetching that bucket costs extra API calls, so it is only requested
 // when a file describes it.
+// baselineFiles returns the changed files plus the repo-relative file of every
+// team in scope and the given global config files. A team or the global scope
+// can be in scope only through a file it references (lib/..., labels/...);
+// without its own file the baseline lacks that scope, so nothing in it could
+// be flagged as drift. Paths are slash-separated, as git expects.
+func baselineFiles(repoRoot string, changed []string, teams []parser.ParsedTeam, globals []string) []string {
+	files := slices.Clone(changed)
+	add := func(f string) {
+		f = filepath.ToSlash(f)
+		if !strings.HasPrefix(f, "../") && !slices.Contains(files, f) {
+			files = append(files, f)
+		}
+	}
+	for _, t := range teams {
+		if rel, err := filepath.Rel(repoRoot, t.SourceFile); err == nil {
+			add(rel)
+		}
+	}
+	for _, g := range globals {
+		add(g)
+	}
+	return files
+}
+
 func hasNoTeam(teams []parser.ParsedTeam) bool {
 	for _, t := range teams {
 		if parser.IsNoTeam(t.Name, t.SourceFile) {

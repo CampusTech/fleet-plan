@@ -46,6 +46,7 @@ type ConfigChange struct {
 	Key     string // dot-separated path, e.g. "server_settings.server_url"
 	Old     string
 	New     string
+	Drift   bool // already differs between the base branch and Fleet; not from this MR
 }
 
 // ResourceDiff categorizes changes for one resource type.
@@ -71,6 +72,7 @@ type ResourceChange struct {
 	Fields    map[string]FieldDiff // field name -> old/new values
 	HostCount uint                 // from API: affected hosts
 	Warning   string               // e.g., "will delete compliance data"
+	Drift     bool                 // already differs between the base branch and Fleet; not from this MR
 }
 
 // FieldDiff shows old vs new value for a single field.
@@ -134,7 +136,7 @@ func WithProfileEnricher(e ProfileEnricher) DiffOption {
 	return func(o *diffOptions) { o.profileEnricher = e }
 }
 
-// WithVerbose enables detailed stderr logging of baseline subtraction.
+// WithVerbose enables detailed stderr logging of baseline drift marking.
 func WithVerbose(v bool) DiffOption {
 	return func(o *diffOptions) { o.verbose = v }
 }
@@ -145,10 +147,10 @@ func WithIncludeGlobal(v bool) DiffOption {
 	return func(o *diffOptions) { o.includeGlobal = v }
 }
 
-// WithBaseline provides a parsed base-branch repo. When set, Diff subtracts
-// changes that already exist between the base branch and Fleet (i.e. changes
-// merged to main but not yet deployed) so that only the incremental changes
-// introduced by the current MR are reported.
+// WithBaseline provides a parsed base-branch repo. When set, Diff flags
+// (ResourceChange.Drift, ConfigChange.Drift) changes that already exist
+// between the base branch and Fleet -- made outside gitops, or merged but not
+// yet deployed -- so they can be told apart from the MR's own changes.
 func WithBaseline(b *parser.ParsedRepo) DiffOption {
 	return func(o *diffOptions) { o.baseline = b }
 }
@@ -245,9 +247,9 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedT
 			fmt.Sprintf("queries diff skipped: %d queries configured, but Fleet has no query scope for hosts on no team", n))
 	}
 
-	// Subtract changes that already exist between the base branch and Fleet,
-	// so a no-team change that is merged but not yet deployed is not reported
-	// again on every later MR.
+	// Flag changes that already exist between the base branch and Fleet, so a
+	// no-team change made outside gitops, or merged but not yet deployed, is
+	// not attributed to this MR.
 	if cfg.baseline != nil {
 		if baseTeam, ok := findBaselineNoTeam(cfg.baseline); ok {
 			base := DiffResult{}
@@ -260,10 +262,10 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedT
 			if !current.ScriptsUnavailable {
 				base.Scripts = diffScripts(current.Scripts, baseTeam.Scripts)
 			}
-			result.Policies = subtractResourceDiff(result.Policies, base.Policies)
-			result.Profiles = subtractResourceDiff(result.Profiles, base.Profiles)
-			result.Scripts = subtractResourceDiff(result.Scripts, base.Scripts)
-			vlog(cfg.verbose, "[%s] after baseline subtraction: policies=%s profiles=%s scripts=%s",
+			result.Policies = markDrift(result.Policies, base.Policies)
+			result.Profiles = markDrift(result.Profiles, base.Profiles)
+			result.Scripts = markDrift(result.Scripts, base.Scripts)
+			vlog(cfg.verbose, "[%s] after baseline drift marking: policies=%s profiles=%s scripts=%s",
 				proposed.Name, rdSummary(result.Policies), rdSummary(result.Profiles), rdSummary(result.Scripts))
 		} else {
 			vlog(cfg.verbose, "[%s] no baseline no-team file found", proposed.Name)
@@ -339,7 +341,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 		vlog(cfg.verbose, "(global) MR diff: policies=%s queries=%s config=%d",
 			rdSummary(globalResult.Policies), rdSummary(globalResult.Queries), len(globalResult.Config))
 
-		// Subtract baseline for global scope
+		// Flag baseline drift for global scope
 		if cfg.baseline != nil && cfg.baseline.Global != nil {
 			vlog(cfg.verbose, "(global) baseline: %d policies, %d queries",
 				len(cfg.baseline.Global.Policies), len(cfg.baseline.Global.Queries))
@@ -353,15 +355,15 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			vlog(cfg.verbose, "(global) baseline diff: policies=%s queries=%s config=%d",
 				rdSummary(basePolicies), rdSummary(baseQueries), len(baseConfig))
 
-			globalResult.Config = subtractConfigChanges(globalResult.Config, baseConfig)
-			globalResult.Policies = subtractResourceDiff(globalResult.Policies, basePolicies)
-			globalResult.Queries = subtractResourceDiff(globalResult.Queries, baseQueries)
+			globalResult.Config = markConfigDrift(globalResult.Config, baseConfig)
+			globalResult.Policies = markDrift(globalResult.Policies, basePolicies)
+			globalResult.Queries = markDrift(globalResult.Queries, baseQueries)
 			if len(cfg.baseline.Labels) > 0 {
-				globalResult.LabelChanges = subtractResourceDiff(globalResult.LabelChanges,
+				globalResult.LabelChanges = markDrift(globalResult.LabelChanges,
 					diffLabels(current.Labels, cfg.baseline.Labels))
 			}
 
-			vlog(cfg.verbose, "(global) after subtraction: policies=%s queries=%s config=%d",
+			vlog(cfg.verbose, "(global) after drift marking: policies=%s queries=%s config=%d",
 				rdSummary(globalResult.Policies), rdSummary(globalResult.Queries), len(globalResult.Config))
 		}
 
@@ -411,7 +413,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			result.Config, result.SkippedConfigSections = diffTeamSettings(currentTeam.Settings, proposedTeam.Settings)
 
 			// enrichedSoftware holds the API software state with fleet-maintained
-			// app scripts populated. Hoisted here so the baseline subtraction
+			// app scripts populated. Hoisted here so the baseline drift pass
 			// can reuse the same enriched state.
 			enrichedSoftware := currentTeam.Software
 
@@ -456,8 +458,8 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				vlog(true, "[%s] MR queries: %s", proposedTeam.Name, rdNames(result.Queries))
 			}
 
-			// Subtract baseline: remove changes that already exist between the
-			// base branch and Fleet (merged but not yet deployed).
+			// Flag changes that already exist between the base branch and
+			// Fleet (made outside gitops, or merged but not yet deployed).
 			if cfg.baseline != nil {
 				if baseTeam, ok := findBaselineTeam(cfg.baseline, proposedTeam.Name); ok {
 					vlog(cfg.verbose, "[%s] baseline team found: %d policies, %d queries",
@@ -481,13 +483,13 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					if cfg.verbose {
 						vlog(true, "[%s] baseline queries: %s", proposedTeam.Name, rdNames(baseDiff.Queries))
 					}
-					result.Config = subtractConfigChanges(result.Config, baseDiff.Config)
-					result.Policies = subtractResourceDiff(result.Policies, baseDiff.Policies)
-					result.Queries = subtractResourceDiff(result.Queries, baseDiff.Queries)
-					result.Software = subtractResourceDiff(result.Software, baseDiff.Software)
-					result.Profiles = subtractResourceDiff(result.Profiles, baseDiff.Profiles)
-					result.Scripts = subtractResourceDiff(result.Scripts, baseDiff.Scripts)
-					vlog(cfg.verbose, "[%s] after subtraction: policies=%s queries=%s software=%s",
+					result.Config = markConfigDrift(result.Config, baseDiff.Config)
+					result.Policies = markDrift(result.Policies, baseDiff.Policies)
+					result.Queries = markDrift(result.Queries, baseDiff.Queries)
+					result.Software = markDrift(result.Software, baseDiff.Software)
+					result.Profiles = markDrift(result.Profiles, baseDiff.Profiles)
+					result.Scripts = markDrift(result.Scripts, baseDiff.Scripts)
+					vlog(cfg.verbose, "[%s] after drift marking: policies=%s queries=%s software=%s",
 						proposedTeam.Name, rdSummary(result.Policies),
 						rdSummary(result.Queries), rdSummary(result.Software))
 				} else {
@@ -604,7 +606,7 @@ func filterChanges(changes []ResourceChange, keep func(string) bool) []ResourceC
 	return out
 }
 
-// ---------- Baseline subtraction ----------
+// ---------- Baseline drift ----------
 
 // findBaselineTeam looks up a team by name in the baseline parsed repo.
 // findBaselineNoTeam returns the baseline's no-team file. It matches on the
@@ -629,57 +631,37 @@ func findBaselineTeam(baseline *parser.ParsedRepo, name string) (parser.ParsedTe
 	return parser.ParsedTeam{}, false
 }
 
-// subtractResourceDiff removes changes from "total" that also appear in
-// "baseline". A change is considered the same if it has the same Name and
-// change type (added/modified/deleted).
+// markDrift flags changes in "total" that also appear in "baseline": they
+// already exist between the base branch and Fleet (changed outside gitops, or
+// merged but not yet deployed), so this MR did not introduce them. They stay
+// in the diff because applying this MR applies them too.
 //
-// For modified resources, if the resource appears in both diffs but with
-// different field changes, it is kept (the MR introduced additional changes
-// beyond what the baseline already had).
-func subtractResourceDiff(total, baseline ResourceDiff) ResourceDiff {
+// Deleted changes match by Name. An added or modified resource matches only
+// when its fields are identical; otherwise the MR changed it further and it
+// is left unflagged.
+func markDrift(total, baseline ResourceDiff) ResourceDiff {
 	return ResourceDiff{
-		Added:    subtractChanges(total.Added, baseline.Added),
-		Modified: subtractModified(total.Modified, baseline.Modified),
-		Deleted:  subtractChanges(total.Deleted, baseline.Deleted),
+		Added:    markDriftChanges(total.Added, baseline.Added, sameFieldDiffs),
+		Modified: markDriftChanges(total.Modified, baseline.Modified, sameFieldDiffs),
+		Deleted:  markDriftChanges(total.Deleted, baseline.Deleted, nil),
 	}
 }
 
-// subtractChanges removes entries from "total" whose Name matches an entry in
-// "baseline". Used for Added and Deleted lists where name-match is sufficient.
-func subtractChanges(total, baseline []ResourceChange) []ResourceChange {
+// markDriftChanges sets Drift on entries of "total" whose Name is in
+// "baseline" and, when sameFields is set, whose Fields match too.
+func markDriftChanges(total, baseline []ResourceChange, sameFields func(a, b map[string]FieldDiff) bool) []ResourceChange {
 	if len(baseline) == 0 {
 		return total
 	}
-	baseNames := make(map[string]bool, len(baseline))
+	base := make(map[string]map[string]FieldDiff, len(baseline))
 	for _, b := range baseline {
-		baseNames[b.Name] = true
+		base[b.Name] = b.Fields
 	}
-	var out []ResourceChange
-	for _, c := range total {
-		if !baseNames[c.Name] {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-// subtractModified removes entries from "total" that have the exact same field
-// diffs in "baseline". If a resource is modified in both but with different
-// fields or values, it is kept (the MR changed it further).
-func subtractModified(total, baseline []ResourceChange) []ResourceChange {
-	if len(baseline) == 0 {
-		return total
-	}
-	baseFields := make(map[string]map[string]FieldDiff, len(baseline))
-	for _, b := range baseline {
-		baseFields[b.Name] = b.Fields
-	}
-	var out []ResourceChange
-	for _, c := range total {
-		bf, exists := baseFields[c.Name]
-		if !exists || !sameFieldDiffs(c.Fields, bf) {
-			out = append(out, c)
-		}
+	out := make([]ResourceChange, len(total))
+	for i, c := range total {
+		bf, ok := base[c.Name]
+		c.Drift = ok && (sameFields == nil || sameFields(c.Fields, bf))
+		out[i] = c
 	}
 	return out
 }
@@ -698,22 +680,21 @@ func sameFieldDiffs(a, b map[string]FieldDiff) bool {
 	return true
 }
 
-// subtractConfigChanges removes ConfigChange entries from "total" that also
-// appear in "baseline" with the same Section, Key, Old, and New values.
-func subtractConfigChanges(total, baseline []ConfigChange) []ConfigChange {
+// markConfigDrift flags ConfigChange entries in "total" that also appear in
+// "baseline" with the same Section, Key, Old, and New values.
+func markConfigDrift(total, baseline []ConfigChange) []ConfigChange {
 	if len(baseline) == 0 {
 		return total
 	}
 	type configKey struct{ Section, Key, Old, New string }
 	baseSet := make(map[configKey]bool, len(baseline))
 	for _, b := range baseline {
-		baseSet[configKey(b)] = true
+		baseSet[configKey{b.Section, b.Key, b.Old, b.New}] = true
 	}
-	var out []ConfigChange
-	for _, c := range total {
-		if !baseSet[configKey(c)] {
-			out = append(out, c)
-		}
+	out := make([]ConfigChange, len(total))
+	for i, c := range total {
+		c.Drift = baseSet[configKey{c.Section, c.Key, c.Old, c.New}]
+		out[i] = c
 	}
 	return out
 }
@@ -1663,7 +1644,7 @@ func addProfileLabelScope(fields map[string]FieldDiff, cur api.Profile, p parser
 
 // fetchProfileContents downloads, in one batch, the stored content of every
 // profile whose checksum does not already prove it unchanged. Profiles are
-// updated in place so a later pass over the same slice (baseline subtraction)
+// updated in place so a later pass over the same slice (baseline drift)
 // reuses what was fetched here.
 //
 // Batching matters: fetching one profile per call would serialize the round

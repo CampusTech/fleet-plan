@@ -50,6 +50,21 @@ func sortedKeys[V any](m map[string]V) []string {
 
 const mdMaxFieldLen = 60
 
+// driftNote tags a change that already differs between the base branch and
+// Fleet, so it was not introduced by the MR/PR being planned.
+const driftNote = "↪️ _not from this change_"
+
+// withDrift prefixes details with driftNote when drift is set.
+func withDrift(drift bool, details string) string {
+	if !drift {
+		return details
+	}
+	if details == "" {
+		return driftNote
+	}
+	return driftNote + " " + details
+}
+
 var permissionErrors = map[string]string{
 	"software diff skipped: API token lacks permission to read software titles": "software",
 	"profiles diff skipped: API token lacks permission to read profiles":        "profiles",
@@ -76,7 +91,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 	}
 	var rows []row
 	var errRows []string
-	totalAdded, totalModified, totalDeleted := 0, 0, 0
+	totalAdded, totalModified, totalDeleted, totalDrift := 0, 0, 0, 0
 
 	for _, result := range results {
 		team := result.Team
@@ -85,11 +100,14 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 		}
 
 		for _, c := range result.Config {
+			if c.Drift {
+				totalDrift++
+			}
 			if c.Old == "" {
-				rows = append(rows, row{"ADDED", team, "Config", c.Section + "." + c.Key, mdCodeSpan(c.New)})
+				rows = append(rows, row{"ADDED", team, "Config", c.Section + "." + c.Key, withDrift(c.Drift, mdCodeSpan(c.New))})
 				totalAdded++
 			} else {
-				rows = append(rows, row{"MODIFIED", team, "Config", c.Section + "." + c.Key, fmt.Sprintf("%s → %s", mdCodeSpan(c.Old), mdCodeSpan(c.New))})
+				rows = append(rows, row{"MODIFIED", team, "Config", c.Section + "." + c.Key, withDrift(c.Drift, fmt.Sprintf("%s → %s", mdCodeSpan(c.Old), mdCodeSpan(c.New)))})
 				totalModified++
 			}
 		}
@@ -107,12 +125,19 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 		}
 
 		for _, rt := range types {
+			for _, list := range [][]diff.ResourceChange{rt.rd.Added, rt.rd.Modified, rt.rd.Deleted} {
+				for _, c := range list {
+					if c.Drift {
+						totalDrift++
+					}
+				}
+			}
 			for _, c := range rt.rd.Added {
 				det := ""
 				if c.HostCount > 0 {
 					det = fmt.Sprintf("~%d hosts", c.HostCount)
 				}
-				rows = append(rows, row{"ADDED", team, rt.name, c.Name, det})
+				rows = append(rows, row{"ADDED", team, rt.name, c.Name, withDrift(c.Drift, det)})
 				totalAdded++
 			}
 			for _, c := range rt.rd.Modified {
@@ -120,7 +145,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 				if det == "" && c.Warning != "" {
 					det = c.Warning
 				}
-				rows = append(rows, row{"MODIFIED", team, rt.name, c.Name, det})
+				rows = append(rows, row{"MODIFIED", team, rt.name, c.Name, withDrift(c.Drift, det)})
 				totalModified++
 			}
 			for _, c := range rt.rd.Deleted {
@@ -128,7 +153,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 				if c.Warning != "" {
 					det = "⚠️ " + c.Warning
 				}
-				rows = append(rows, row{"REMOVED", team, rt.name, c.Name, det})
+				rows = append(rows, row{"REMOVED", team, rt.name, c.Name, withDrift(c.Drift, det)})
 				totalDeleted++
 			}
 		}
@@ -160,17 +185,32 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	sb.WriteString("---\n")
 	sb.WriteString(mdSummaryLine(totalAdded, totalModified, totalDeleted))
+	if totalDrift > 0 {
+		fmt.Fprintf(&sb, " (%d not from this change)", totalDrift)
+	}
 	sb.WriteString("\n")
 
 	if warning := buildPermissionWarning(results); warning != "" {
 		fmt.Fprintf(&sb, "\n⚠️ %s\n", warning)
 	}
 
-	sb.WriteString("\n> **NOTE:** Unexpected changes? Rebase, or confirm that changes have been deployed to Fleet.\n")
+	if totalDrift > 0 {
+		fmt.Fprintf(&sb, "\n> **NOTE:** %d %s marked _not from this change_ already %s between the base branch and Fleet: made outside gitops, or merged but not yet deployed. Merging this applies %s too.\n",
+			totalDrift, plural(totalDrift, "change", "changes"), plural(totalDrift, "differs", "differ"), plural(totalDrift, "it", "them"))
+	} else {
+		sb.WriteString("\n> **NOTE:** Unexpected changes? Rebase, or confirm that changes have been deployed to Fleet.\n")
+	}
 
 	writeMarker(&sb, opts)
 
 	return sb.String()
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func mdCodeSpan(s string) string {

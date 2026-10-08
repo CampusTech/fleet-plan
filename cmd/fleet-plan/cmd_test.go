@@ -791,3 +791,21 @@ func TestHasNoTeam(t *testing.T) {
 		})
 	}
 }
+
+// A PR that changes only a lib/ file still scopes to the team that references
+// it. The baseline must carry that team's file, or the team has no baseline
+// and drift (e.g. a profile uploaded outside gitops) reads as the PR's change.
+func TestBaselineFiles(t *testing.T) {
+	root := t.TempDir()
+	teams := []parser.ParsedTeam{
+		{Name: "Workstations", SourceFile: filepath.Join(root, "teams", "workstations.yml")},
+		{Name: "Servers", SourceFile: filepath.Join(root, "teams", "servers.yml")},
+	}
+	changed := []string{"lib/macos/scripts/notify.sh", "teams/servers.yml"}
+
+	got := baselineFiles(root, changed, teams, []string{"default.yml"})
+	want := []string{"lib/macos/scripts/notify.sh", "teams/servers.yml", "teams/workstations.yml", "default.yml"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}

@@ -31,6 +31,7 @@ type JSONConfigChange struct {
 	Key     string `json:"key"`
 	Old     string `json:"old,omitempty"`
 	New     string `json:"new"`
+	Drift   bool   `json:"drift,omitempty"` // differs between base branch and Fleet; not from this change
 }
 
 // JSONResourceDiff is a resource diff in JSON format.
@@ -46,6 +47,7 @@ type JSONChange struct {
 	Fields    map[string]JSONField `json:"fields,omitempty"`
 	HostCount uint                 `json:"host_count,omitempty"`
 	Warning   string               `json:"warning,omitempty"`
+	Drift     bool                 `json:"drift,omitempty"` // differs between base branch and Fleet; not from this change
 }
 
 // JSONField is an old/new field value in JSON format.
@@ -115,6 +117,7 @@ func convertChanges(changes []diff.ResourceChange) []JSONChange {
 			Name:      c.Name,
 			HostCount: c.HostCount,
 			Warning:   c.Warning,
+			Drift:     c.Drift,
 		}
 		if len(c.Fields) > 0 {
 			jc.Fields = make(map[string]JSONField)
@@ -149,6 +152,7 @@ func convertConfigChanges(changes []diff.ConfigChange) []JSONConfigChange {
 			Key:     c.Key,
 			Old:     c.Old,
 			New:     c.New,
+			Drift:   c.Drift,
 		})
 	}
 	return result

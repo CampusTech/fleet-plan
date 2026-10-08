@@ -349,3 +349,18 @@ func TestRenderDiffJSONSpecialCharsRoundtrip(t *testing.T) {
 		t.Error("expected quotes in output")
 	}
 }
+
+func TestRenderDiffJSONDrift(t *testing.T) {
+	out, err := RenderDiffJSON([]diff.DiffResult{{
+		Team:     "T",
+		Config:   []diff.ConfigChange{{Section: "s", Key: "k", New: "v", Drift: true}},
+		Profiles: diff.ResourceDiff{Deleted: []diff.ResourceChange{{Name: "P", Drift: true}, {Name: "Q"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// P and the config change are flagged; Q is not, and omitempty hides it.
+	if strings.Count(out, `"drift": true`) != 2 || strings.Count(out, `"drift"`) != 2 {
+		t.Errorf("want drift only on the two flagged changes, got:\n%s", out)
+	}
+}

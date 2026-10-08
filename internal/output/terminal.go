@@ -130,9 +130,13 @@ func renderConfigChanges(changes []diff.ConfigChange, summary *DiffSummary, verb
 	lines = append(lines, bold.Render("  Config:"))
 
 	for _, c := range changes {
+		drift := ""
+		if c.Drift {
+			drift = dim.Render(" (not from this change)")
+		}
 		if c.Old == "" {
 			summary.Added++
-			lines = append(lines, green.Render("    + ")+fmt.Sprintf("%s.%s", c.Section, c.Key))
+			lines = append(lines, green.Render("    + ")+fmt.Sprintf("%s.%s", c.Section, c.Key)+drift)
 			val := fmt.Sprintf("= %q", c.New)
 			if !verbose {
 				val = truncateToFit(val, maxLineWidth-len(fieldIndent))
@@ -140,7 +144,7 @@ func renderConfigChanges(changes []diff.ConfigChange, summary *DiffSummary, verb
 			lines = append(lines, fieldIndent+dim.Render(val))
 		} else {
 			summary.Modified++
-			lines = append(lines, yellow.Render("    ~ ")+fmt.Sprintf("%s.%s", c.Section, c.Key))
+			lines = append(lines, yellow.Render("    ~ ")+fmt.Sprintf("%s.%s", c.Section, c.Key)+drift)
 			if verbose {
 				lines = append(lines, fieldIndent+dim.Render(fmt.Sprintf("%q ", c.Old))+yellow.Render("→")+dim.Render(fmt.Sprintf(" %q", c.New)))
 			} else {
@@ -186,13 +190,17 @@ func renderChangeList(items []diff.ResourceChange, changeType string, color lipg
 
 	var lines []string
 	for _, c := range items {
+		drift := ""
+		if c.Drift {
+			drift = dim.Render(" (not from this change)")
+		}
 		switch changeType {
 		case "added":
 			line := color.Render(prefix + c.Name)
 			if c.HostCount > 0 {
 				line += dim.Render(fmt.Sprintf(" (~%d hosts)", c.HostCount))
 			}
-			lines = append(lines, line)
+			lines = append(lines, line+drift)
 			if verbose {
 				lines = append(lines, renderFieldLines(c.Fields, verbose, false)...)
 			}
@@ -202,7 +210,7 @@ func renderChangeList(items []diff.ResourceChange, changeType string, color lipg
 			if len(c.Fields) == 0 && c.Warning != "" {
 				line += dim.Render(" (" + c.Warning + ")")
 			}
-			lines = append(lines, line)
+			lines = append(lines, line+drift)
 			lines = append(lines, renderFieldLines(c.Fields, verbose, true)...)
 
 		case "deleted":
@@ -210,7 +218,7 @@ func renderChangeList(items []diff.ResourceChange, changeType string, color lipg
 			if c.HostCount > 0 {
 				line += dim.Render(fmt.Sprintf(" (~%d hosts)", c.HostCount))
 			}
-			lines = append(lines, line)
+			lines = append(lines, line+drift)
 			if c.Warning != "" {
 				lines = append(lines, "      "+red.Render("! "+c.Warning))
 			}
