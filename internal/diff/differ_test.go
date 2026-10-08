@@ -3890,3 +3890,110 @@ func TestFoldTeamsAlias(t *testing.T) {
 		})
 	}
 }
+
+// Team controls are diffed against the team's mdm object, setup_experience
+// against its legacy macos_setup spelling. Scripts and profiles stay with
+// their own diffs, and keys the API does not report are not guessed at.
+func TestDiffTeamControlsAndAgentOptions(t *testing.T) {
+	current := &api.FleetState{Labels: []api.Label{}, Teams: []api.Team{{
+		ID:   1,
+		Name: "Workstations",
+		Settings: map[string]any{
+			"mdm": map[string]any{
+				"enable_disk_encryption": true,
+				"macos_updates":          map[string]any{"minimum_version": "26.5", "deadline": "2026-10-13"},
+				"windows_updates":        map[string]any{"deadline_days": float64(7)},
+				"macos_setup": map[string]any{
+					"enable_end_user_authentication": true,
+					"macos_setup_assistant":          "../lib/old.dep.json",
+					"script":                         "",
+				},
+			},
+			"agent_options": map[string]any{"config": map[string]any{"options": map[string]any{"distributed_interval": float64(10)}}},
+		},
+	}}}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Workstations",
+		SourceFile: "fleets/workstations.yml",
+		Controls: map[string]any{
+			"enable_disk_encryption": true,
+			"macos_updates":          map[string]any{"minimum_version": "27.0.1", "deadline": "2026-10-13"},
+			"windows_updates":        map[string]any{"deadline_days": 7},
+			"setup_experience": map[string]any{
+				"enable_end_user_authentication": true,
+				"apple_setup_assistant":          "../lib/new.dep.json",
+				"macos_script":                   "../lib/setup.sh",
+			},
+			"scripts":                             []any{map[string]any{"path": "../lib/x.sh"}},
+			"apple_settings":                      map[string]any{"configuration_profiles": []any{}},
+			"windows_migration_enabled":           true,
+			"enable_turn_on_windows_mdm_manually": false,
+		},
+		AgentOptions: map[string]any{"config": map[string]any{"options": map[string]any{"distributed_interval": 60}}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil)[0]
+	got := map[string]string{}
+	for _, c := range r.Config {
+		got[c.Section+"."+c.Key] = c.Old + " -> " + c.New
+	}
+	want := map[string]string{
+		"controls.macos_updates.minimum_version":            "26.5 -> 27.0.1",
+		"controls.setup_experience.apple_setup_assistant":   "../lib/old.dep.json -> ../lib/new.dep.json",
+		"agent_options.config.options.distributed_interval": "10 -> 60",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("config changes:\n got  %v\n want %v", got, want)
+	}
+}
+
+// Unassigned (no team) controls are Fleet's global MDM settings, which use the
+// modern setup_experience spelling.
+func TestDiffNoTeamControls(t *testing.T) {
+	current := &api.FleetState{
+		Labels: []api.Label{}, NoTeam: &api.NoTeam{},
+		Config: map[string]any{"mdm": map[string]any{
+			"windows_enabled_and_configured": true,
+			"macos_updates":                  map[string]any{"minimum_version": "26.5"},
+			"setup_experience":               map[string]any{"enable_end_user_authentication": true},
+		}},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Unassigned",
+		SourceFile: "fleets/unassigned.yml",
+		Controls: map[string]any{
+			"windows_enabled_and_configured": false,
+			"macos_updates":                  map[string]any{"minimum_version": "26.5"},
+			"setup_experience":               map[string]any{"enable_end_user_authentication": true},
+		},
+	}}}
+	baseline := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "Unassigned",
+		SourceFile: "fleets/unassigned.yml",
+		Controls:   map[string]any{"windows_enabled_and_configured": true},
+	}}}
+
+	r := Diff(current, proposed, nil, nil, WithBaseline(baseline))[0]
+	if len(r.Config) != 1 {
+		t.Fatalf("config changes: got %+v, want only windows_enabled_and_configured", r.Config)
+	}
+	c := r.Config[0]
+	if c.Section != "controls" || c.Key != "windows_enabled_and_configured" || c.Old != "true" || c.New != "false" || c.Drift {
+		t.Errorf("got %+v, want controls.windows_enabled_and_configured true -> false, not drift", c)
+	}
+}
+
+// JSON decodes every number as float64, and fmt prints a large one in
+// exponent form (2.62144e+07), which never equals YAML's integer 26214400.
+func TestDiffFlatLargeNumbers(t *testing.T) {
+	api := map[string]any{"command_line_flags": map[string]any{"logger_rotate_size": float64(26214400), "ratio": 0.5}}
+	proposed := map[string]any{"command_line_flags": map[string]any{"logger_rotate_size": 26214400, "ratio": 0.5}}
+	if got := diffFlat("agent_options", "", proposed, api, nil); len(got) != 0 {
+		t.Errorf("got %+v, want no changes", got)
+	}
+	proposed["command_line_flags"].(map[string]any)["logger_rotate_size"] = 10485760
+	got := diffFlat("agent_options", "", proposed, api, nil)
+	if len(got) != 1 || got[0].Old != "26214400" || got[0].New != "10485760" {
+		t.Errorf("got %+v, want 26214400 -> 10485760", got)
+	}
+}

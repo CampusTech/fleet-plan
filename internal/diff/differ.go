@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -202,7 +203,7 @@ func noTeamSummary(t parser.ParsedTeam) string {
 // When the bucket was not fetched (older Fleet, or the caller did not ask for
 // it), it falls back to reporting what the repo configures, so nothing
 // silently disappears from the plan.
-func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedTeam, changedFiles []string, cfg diffOptions) {
+func diffNoTeam(result *DiffResult, current *api.NoTeam, globalMDM map[string]any, proposed parser.ParsedTeam, changedFiles []string, cfg diffOptions) {
 	if current == nil {
 		if summary := noTeamSummary(proposed); summary != "" {
 			result.Errors = append(result.Errors,
@@ -230,6 +231,9 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedT
 	} else {
 		result.Scripts = diffScripts(current.Scripts, proposed.Scripts)
 	}
+
+	// The no-team file's controls are Fleet's global MDM settings.
+	result.Config = diffControls(globalMDM, proposed.Controls, nil)
 
 	// Fleet reports configured software only through the teams list, which
 	// excludes this bucket, so there is nothing to compare against. Say so
@@ -266,6 +270,7 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, proposed parser.ParsedT
 			result.Policies = markDrift(result.Policies, base.Policies)
 			result.Profiles = markDrift(result.Profiles, base.Profiles)
 			result.Scripts = markDrift(result.Scripts, base.Scripts)
+			result.Config = markConfigDrift(result.Config, diffControls(globalMDM, baseTeam.Controls, nil))
 			vlog(cfg.verbose, "[%s] after baseline drift marking: policies=%s profiles=%s scripts=%s",
 				proposed.Name, rdSummary(result.Policies), rdSummary(result.Profiles), rdSummary(result.Scripts))
 		} else {
@@ -392,7 +397,8 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			// returned by the /teams API endpoint. Skip the "will be created"
 			// warning for it, and don't list its resources as additions.
 			if parser.IsNoTeam(proposedTeam.Name, proposedTeam.SourceFile) {
-				diffNoTeam(&result, current.NoTeam, proposedTeam, changedFiles, cfg)
+				globalMDM, _ := current.Config["mdm"].(map[string]any)
+				diffNoTeam(&result, current.NoTeam, globalMDM, proposedTeam, changedFiles, cfg)
 			} else {
 				// Genuinely new team. Diffing against nothing lists every
 				// policy and query as added, with fields for drift matching.
@@ -416,7 +422,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 
 			result.Policies = diffPolicies(currentTeam.Policies, proposedTeam.Policies)
 			result.Queries = diffQueries(currentTeam.Queries, proposedTeam.Queries)
-			result.Config, result.SkippedConfigSections = diffTeamSettings(currentTeam.Settings, proposedTeam.Settings)
+			result.Config, result.SkippedConfigSections = diffTeamConfig(currentTeam.Settings, proposedTeam)
 
 			// enrichedSoftware holds the API software state with fleet-maintained
 			// app scripts populated. Hoisted here so the baseline drift pass
@@ -473,7 +479,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					baseDiff := DiffResult{}
 					baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
 					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
-					baseDiff.Config, _ = diffTeamSettings(currentTeam.Settings, baseTeam.Settings)
+					baseDiff.Config, _ = diffTeamConfig(currentTeam.Settings, baseTeam)
 					if !currentTeam.SoftwareUnavailable {
 						baseDiff.Software, _ = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
@@ -1871,36 +1877,7 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]Conf
 			continue
 		}
 
-		// Recursive key-by-key comparison.
-		// Only report a diff when the API actually has a value for this key.
-		// If getNestedValue returns "" the API doesn't expose the field (e.g.
-		// agent_options sub-keys, sso_settings) and we can't determine whether
-		// the proposed value differs from what Fleet already has.
-		flattenMap(proposedMap, "", func(key, proposedVal string) {
-			if containsEnvVar(proposedVal) {
-				return
-			}
-			if proposedVal == "<nil>" || proposedVal == "" {
-				return
-			}
-			apiVal := getNestedValue(apiSection, key)
-			if apiVal == "<nil>" || apiVal == "" {
-				return
-			}
-			compareAPI, compareProposed := apiVal, proposedVal
-			if looksLikeJSON(apiVal) && looksLikeJSON(proposedVal) {
-				compareAPI = normalizeJSON(apiVal)
-				compareProposed = normalizeJSON(proposedVal)
-			}
-			if compareAPI != compareProposed {
-				changes = append(changes, ConfigChange{
-					Section: section,
-					Key:     key,
-					Old:     apiVal,
-					New:     proposedVal,
-				})
-			}
-		})
+		changes = append(changes, diffFlat(section, "", proposedMap, apiSection, nil)...)
 	}
 
 	return changes, skipped
@@ -1956,37 +1933,118 @@ func diffTeamSettings(current, proposed map[string]any) ([]ConfigChange, []strin
 			continue
 		}
 
-		// Same guards as diffConfig: skip env var placeholders Fleet
-		// substitutes, and skip keys the API does not expose a value for,
-		// since "" cannot be distinguished from "not reported".
-		flattenMap(proposedMap, section, func(key, proposedVal string) {
-			if containsEnvVar(proposedVal) || proposedVal == "<nil>" || proposedVal == "" {
-				return
-			}
-			apiVal := getNestedValue(apiSection, strings.TrimPrefix(key, section+"."))
-			if apiVal == "<nil>" || apiVal == "" {
-				return
-			}
-			compareAPI, compareProposed := apiVal, proposedVal
-			if looksLikeJSON(apiVal) && looksLikeJSON(proposedVal) {
-				compareAPI = normalizeJSON(apiVal)
-				compareProposed = normalizeJSON(proposedVal)
-			}
-			if compareAPI != compareProposed {
-				changes = append(changes, ConfigChange{
-					Section: "settings",
-					Key:     key,
-					Old:     apiVal,
-					New:     proposedVal,
-				})
-			}
-		})
+		changes = append(changes, diffFlat("settings", section+".", proposedMap, apiSection, nil)...)
 	}
 
 	// flattenMap walks maps in random order; sort so output is stable.
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
 	sort.Strings(skipped)
 
+	return changes, skipped
+}
+
+// diffFlat compares every leaf of proposed with the value at the same
+// dot-path in apiSection (renamed by apiKey when set), and reports each
+// difference under section with keyPrefix prepended to the key.
+//
+// Leaves that reference an env var are skipped: Fleet substitutes them, so the
+// stored value never matches. So are keys the API reports no value for, since
+// "" cannot be told apart from "not reported" (agent_options sub-keys,
+// sso_settings, ...).
+func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, apiKey func(string) string) []ConfigChange {
+	var changes []ConfigChange
+	flattenMap(proposed, "", func(key, proposedVal string) {
+		if containsEnvVar(proposedVal) || proposedVal == "<nil>" || proposedVal == "" {
+			return
+		}
+		lookup := key
+		if apiKey != nil {
+			lookup = apiKey(key)
+		}
+		apiVal := getNestedValue(apiSection, lookup)
+		if apiVal == "<nil>" || apiVal == "" {
+			return
+		}
+		compareAPI, compareProposed := apiVal, proposedVal
+		if looksLikeJSON(apiVal) && looksLikeJSON(proposedVal) {
+			compareAPI = normalizeJSON(apiVal)
+			compareProposed = normalizeJSON(proposedVal)
+		}
+		if compareAPI != compareProposed {
+			changes = append(changes, ConfigChange{
+				Section: section,
+				Key:     keyPrefix + key,
+				Old:     apiVal,
+				New:     proposedVal,
+			})
+		}
+	})
+	// flattenMap walks maps in random order; sort so output is stable.
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
+	return changes
+}
+
+// controlsDiffedElsewhere are controls keys resolved into the profile and
+// script diffs, so the settings diff leaves them alone.
+var controlsDiffedElsewhere = map[string]bool{
+	"scripts":          true,
+	"apple_settings":   true,
+	"macos_settings":   true,
+	"windows_settings": true,
+	"android_settings": true,
+}
+
+// teamMacOSSetupKeys maps setup_experience sub-keys to the legacy names a
+// team's mdm.macos_setup still uses. Global config reports setup_experience
+// under its modern names, so only teams need this.
+var teamMacOSSetupKeys = map[string]string{
+	"apple_setup_assistant":                "macos_setup_assistant",
+	"apple_enable_release_device_manually": "enable_release_device_manually",
+	"macos_script":                         "script",
+	"macos_bootstrap_package":              "bootstrap_package",
+	"macos_manual_agent_install":           "manual_agent_install",
+	"enable_create_local_admin_account":    "enable_managed_local_account",
+}
+
+// teamControlsAPIKey maps a team controls dot-path to where the team's mdm
+// object reports it.
+func teamControlsAPIKey(key string) string {
+	sub, ok := strings.CutPrefix(key, "setup_experience.")
+	if !ok {
+		return key
+	}
+	if legacy, ok := teamMacOSSetupKeys[sub]; ok {
+		sub = legacy
+	}
+	return "macos_setup." + sub
+}
+
+// diffControls compares a team file's controls (minus scripts and profiles)
+// with an mdm object: the team's for a real team, global config's for the
+// no-team bucket. apiKey renames keys for the team API; nil for global.
+func diffControls(mdm, controls map[string]any, apiKey func(string) string) []ConfigChange {
+	if len(controls) == 0 || mdm == nil {
+		return nil
+	}
+	rest := make(map[string]any, len(controls))
+	for k, v := range controls {
+		if !controlsDiffedElsewhere[k] {
+			rest[k] = v
+		}
+	}
+	return diffFlat("controls", "", rest, mdm, apiKey)
+}
+
+// diffTeamConfig returns a team's settings, controls, and agent_options
+// changes against the raw team object from GET /teams, plus the settings
+// sub-keys that could not be diffed.
+func diffTeamConfig(current map[string]any, team parser.ParsedTeam) ([]ConfigChange, []string) {
+	changes, skipped := diffTeamSettings(current, team.Settings)
+	mdm, _ := current["mdm"].(map[string]any)
+	changes = append(changes, diffControls(mdm, team.Controls, teamControlsAPIKey)...)
+	if agent, ok := current["agent_options"].(map[string]any); ok && len(team.AgentOptions) > 0 {
+		changes = append(changes, diffFlat("agent_options", "", team.AgentOptions, agent, nil)...)
+	}
 	return changes, skipped
 }
 
@@ -2099,9 +2157,19 @@ func flattenMap(m map[string]any, prefix string, fn func(key, val string)) {
 				fn(fullKey, string(b))
 			}
 		default:
-			fn(fullKey, fmt.Sprint(v))
+			fn(fullKey, formatLeaf(v))
 		}
 	}
+}
+
+// formatLeaf renders a scalar for comparison. JSON decodes every number as
+// float64, and fmt prints a large one in exponent form (2.62144e+07) that
+// never equals the YAML integer, so floats are printed in plain decimal.
+func formatLeaf(v any) string {
+	if f, ok := v.(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return fmt.Sprint(v)
 }
 
 // getNestedValue retrieves a value from a nested map using a dot-separated key.
@@ -2122,7 +2190,7 @@ func getNestedValue(m map[string]any, key string) string {
 				}
 				return string(b)
 			}
-			return fmt.Sprint(v)
+			return formatLeaf(v)
 		}
 		if next, ok := v.(map[string]any); ok {
 			current = next

@@ -81,7 +81,7 @@ Config file supports multiple contexts:
 
 ## Parser
 
-Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also parses `default.yml` for labels, `org_settings`, `agent_options`, `controls`, and global policies/queries. A team's `settings:` block (or the older `team_settings:` spelling) is kept as a nested map for field-level diffing. All path references are validated against the repo root to prevent traversal.
+Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also parses `default.yml` for labels, `org_settings`, `agent_options`, `controls`, and global policies/queries. A team's `settings:` block (or the older `team_settings:` spelling) and its `controls:` block are kept as nested maps for field-level diffing. An `agent_options: path:` reference, in a team file or `default.yml`, is replaced by the file it points to. All path references are validated against the repo root to prevent traversal.
 
 ---
 
@@ -95,6 +95,8 @@ Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched 
 |----------|-----------|-------------|
 | Config sections (global) | dot-path key | old/new value (skips `$VAR` placeholders) |
 | Team `settings:` | dot-path key | old/new value vs the team object from `GET /teams`; `secrets:` is never diffed |
+| Team `controls:` | dot-path key | old/new value vs the team's `mdm` object (`setup_experience` vs its legacy `macos_setup` names); for the no-team file, vs global `config.mdm`. Scripts and profiles are diffed separately |
+| Team `agent_options:` | dot-path key | old/new value vs the team's `agent_options` |
 | Policies | `name` | query, description, resolution, platform, critical, labels_include_any, labels_exclude_any |
 | Queries | `name` | query, interval, platform, logging |
 | Software packages | `referenced_yaml_path` | url, hash, self_service, categories |
@@ -110,6 +112,8 @@ Profile content is compared key by key. The profile list carries each stored pro
 Label scoping lists (`labels_include_any` etc.) are compared as sets: order is ignored and an omitted list equals an empty one. Fleet returns them as `{id, name}` objects; the client keeps only the names.
 
 Category names are normalized before comparison. Fleet reports them as display names with an emoji prefix (`🔐 Security`), while fleet-gitops YAML writes them plainly (`Security`); only leading symbols are stripped, so a category starting with a letter or digit (`1Password`) is untouched.
+
+Numbers are compared in plain decimal: JSON decodes every number as float64, which `fmt` would print as `2.62144e+07`. In JSON values, a `teams` key is treated as the legacy spelling of `fleets` (Fleet 4.92 returns both on VPP tokens).
 
 Whitespace is normalized before comparison to avoid false positives from YAML vs API newline differences. Per-field diffs are stored in `ResourceChange.Fields` for both added and modified resources.
 

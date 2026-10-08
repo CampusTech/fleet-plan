@@ -113,13 +113,20 @@ type ParsedTeam struct {
 	// `team_settings:` spelling) as a nested map: webhook_settings,
 	// host_expiry_settings, integrations, features. Diffed field by field
 	// against the matching keys on the Fleet team object.
-	Settings   map[string]any
-	Policies   []ParsedPolicy
-	Queries    []ParsedQuery
-	Software   ParsedSoftware
-	Profiles   []ParsedProfile
-	Scripts    []ParsedScript
-	SourceFile string
+	Settings map[string]any
+	// Controls holds the team's `controls:` block as a nested map. Scripts
+	// and profiles are also resolved into Scripts and Profiles; the rest
+	// (macos_updates, enable_disk_encryption, ...) is diffed as settings.
+	Controls map[string]any
+	// AgentOptions holds the team's `agent_options:`, with a `path:`
+	// reference already replaced by the file it points to.
+	AgentOptions map[string]any
+	Policies     []ParsedPolicy
+	Queries      []ParsedQuery
+	Software     ParsedSoftware
+	Profiles     []ParsedProfile
+	Scripts      []ParsedScript
+	SourceFile   string
 }
 
 // ParsedScript represents a script under controls.scripts.
@@ -365,6 +372,31 @@ func decodeSettingsNode(nodes ...yaml.Node) map[string]any {
 	return nil
 }
 
+// resolveAgentOptions follows an `agent_options: path:` reference, relative to
+// dir and confined to root, and returns the referenced file's mapping. A block
+// without path: is returned as is. On error it returns nil.
+func resolveAgentOptions(root, dir string, m map[string]any) (map[string]any, error) {
+	ref, ok := m["path"].(string)
+	if !ok {
+		return m, nil
+	}
+	resolved := filepath.Join(dir, ref)
+	if root != "" {
+		if err := safePath(root, resolved); err != nil {
+			return nil, err
+		}
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("agent_options: %w", err)
+	}
+	var out map[string]any
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("agent_options %s: %w", ref, err)
+	}
+	return out, nil
+}
+
 // IsNoTeam reports whether a parsed team file describes Fleet's special
 // "hosts not assigned to any team" bucket rather than a real team.
 //
@@ -481,8 +513,14 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 	team := &ParsedTeam{
 		Name:       raw.Name,
 		Settings:   decodeSettingsNode(raw.Settings, raw.TeamSettings),
+		Controls:   decodeSettingsNode(rawMap["controls"]),
 		SourceFile: path,
 	}
+	agentOptions, err := resolveAgentOptions(root, filepath.Dir(path), decodeSettingsNode(raw.AgentOptions))
+	if err != nil {
+		errs = append(errs, ParseError{File: path, Message: err.Error()})
+	}
+	team.AgentOptions = agentOptions
 
 	dir := filepath.Dir(path)
 	seenSoftwareRefs := make(map[string]bool)
@@ -937,7 +975,11 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 	}
 	if v, ok := rawMap["agent_options"]; ok {
 		if m, ok := v.(map[string]any); ok {
-			global.AgentOptions = m
+			resolved, err := resolveAgentOptions(root, dir, m)
+			if err != nil {
+				errs = append(errs, ParseError{File: path, Message: err.Error()})
+			}
+			global.AgentOptions = resolved
 		}
 	}
 	if v, ok := rawMap["controls"]; ok {
