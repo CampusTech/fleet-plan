@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -610,6 +611,57 @@ func TestRunDiffGitModePostsComment(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("markdown output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// When the MR's base commit already has the same YAML, every difference from
+// Fleet predates the MR, so the comment must flag each one as drift.
+func TestRunDiffGitModeFlagsBaselineDrift(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.CopyFS(repo, os.DirFS(filepath.Join("..", "..", "testdata"))); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "-A"},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	head, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fleet := stubFleetAPI(t)
+	gitlab := gitLabStub(t, []string{"teams/workstations.yml"})
+	t.Setenv("FLEET_PLAN_INSECURE", "1")
+	t.Setenv("FLEET_URL", fleet.URL)
+	t.Setenv("FLEET_TOKEN", "test-token")
+	t.Setenv("HOME", t.TempDir())
+	setGitLabEnv(t, gitlab.URL)
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", strings.TrimSpace(string(head)))
+
+	out, err := runCLI(t, "--repo", repo, "--git", "--format", "markdown", "--no-color")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	rows := 0
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "| ADDED |") && !strings.HasPrefix(line, "| MODIFIED |") && !strings.HasPrefix(line, "| REMOVED |") {
+			continue
+		}
+		rows++
+		if !strings.Contains(line, "not from this change") {
+			t.Errorf("row not flagged as drift: %s", line)
+		}
+	}
+	if rows == 0 {
+		t.Fatalf("expected change rows, got:\n%s", out)
 	}
 }
 

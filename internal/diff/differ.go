@@ -401,6 +401,21 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					result.Queries.Added = append(result.Queries.Added, ResourceChange{Name: q.Name})
 				}
 				result.Errors = append(result.Errors, fmt.Sprintf("info: team %q does not exist in Fleet yet (will be created)", proposedTeam.Name))
+				// A team already on the base branch but not yet in Fleet:
+				// whatever the base branch adds was not introduced by this MR.
+				if cfg.baseline != nil {
+					if baseTeam, ok := findBaselineTeam(cfg.baseline, proposedTeam.Name); ok {
+						var basePolicies, baseQueries ResourceDiff
+						for _, p := range baseTeam.Policies {
+							basePolicies.Added = append(basePolicies.Added, ResourceChange{Name: p.Name})
+						}
+						for _, q := range baseTeam.Queries {
+							baseQueries.Added = append(baseQueries.Added, ResourceChange{Name: q.Name})
+						}
+						result.Policies = markDrift(result.Policies, basePolicies)
+						result.Queries = markDrift(result.Queries, baseQueries)
+					}
+				}
 			}
 		} else {
 			vlog(cfg.verbose, "[%s] proposed: %d policies, %d queries", proposedTeam.Name,
