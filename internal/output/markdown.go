@@ -193,6 +193,9 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 	if warning := buildPermissionWarning(results); warning != "" {
 		fmt.Fprintf(&sb, "\n⚠️ %s\n", warning)
 	}
+	if note := buildNotDiffedNote(results); note != "" {
+		fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
+	}
 
 	if totalDrift > 0 {
 		fmt.Fprintf(&sb, "\n> **NOTE:** %d %s marked _not from this change_ already %s between the base branch and Fleet: made outside gitops, or merged but not yet deployed. Merging this applies %s too.\n",
@@ -342,6 +345,27 @@ func mdSummaryLine(added, modified, deleted int) string {
 	return "**" + strings.Join(parts, ", ") + "**"
 }
 
+// buildNotDiffedNote lists configured settings the plan could not compare:
+// keys Fleet does not report, and settings sections it did not return.
+// Either can be a rename on the Fleet side or a token that cannot read them,
+// so the note does not claim which.
+func buildNotDiffedNote(results []diff.DiffResult) string {
+	seen := make(map[string]bool)
+	for _, r := range results {
+		for _, s := range r.SkippedConfigSections {
+			seen[s] = true
+		}
+	}
+	if len(seen) == 0 {
+		return ""
+	}
+	keys := sortedKeys(seen)
+	for i, k := range keys {
+		keys[i] = mdCodeSpan(k)
+	}
+	return "Not diffed (Fleet does not report these, or the token cannot read them): " + strings.Join(keys, ", ")
+}
+
 func buildPermissionWarning(results []diff.DiffResult) string {
 	unavailable := make(map[string]bool)
 
@@ -350,9 +374,6 @@ func buildPermissionWarning(results []diff.DiffResult) string {
 			if resource, ok := permissionErrors[e]; ok {
 				unavailable[resource] = true
 			}
-		}
-		for _, s := range r.SkippedConfigSections {
-			unavailable[s] = true
 		}
 	}
 

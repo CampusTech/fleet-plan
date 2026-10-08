@@ -2542,13 +2542,13 @@ func TestDiffTeamSettings(t *testing.T) {
 			},
 		},
 		{
-			// The API does not report a value for this key, so "" cannot be
-			// told apart from "Fleet has no opinion" -- reporting it would be
-			// a guess.
-			name: "key absent from the API section is not reported",
+			// The API does not report this key at all: not a change, but
+			// listed as not diffed rather than dropped without a word.
+			name: "key absent from the API section is listed as not diffed",
 			proposed: map[string]any{
 				"features": map[string]any{"enable_future_thing": true},
 			},
+			wantSkipped: []string{"settings.features.enable_future_thing"},
 		},
 		{
 			// List values are compared as serialized JSON, element order
@@ -3989,11 +3989,11 @@ func TestDiffNoTeamControls(t *testing.T) {
 func TestDiffFlatLargeNumbers(t *testing.T) {
 	api := map[string]any{"command_line_flags": map[string]any{"logger_rotate_size": float64(26214400), "ratio": 0.5}}
 	proposed := map[string]any{"command_line_flags": map[string]any{"logger_rotate_size": 26214400, "ratio": 0.5}}
-	if got := diffFlat("agent_options", "", proposed, api, nil, false); len(got) != 0 {
+	if got, _ := diffFlat("agent_options", "", proposed, api, nil, false); len(got) != 0 {
 		t.Errorf("got %+v, want no changes", got)
 	}
 	proposed["command_line_flags"].(map[string]any)["logger_rotate_size"] = 10485760
-	got := diffFlat("agent_options", "", proposed, api, nil, false)
+	got, _ := diffFlat("agent_options", "", proposed, api, nil, false)
 	if len(got) != 1 || got[0].Old != "26214400" || got[0].New != "10485760" {
 		t.Errorf("got %+v, want 26214400 -> 10485760", got)
 	}
@@ -4011,7 +4011,7 @@ func TestDiffControlsEmptyAPIValue(t *testing.T) {
 		// Fleet keeps setup scripts by name and reports "" here: not a change.
 		"setup_experience": map[string]any{"macos_script": "../lib/setup.sh"},
 	}
-	got := diffControls(mdm, controls, teamControlsAPIKey)
+	got, _ := diffControls(mdm, controls, teamControlsAPIKey)
 	if len(got) != 1 || got[0].Key != "macos_updates.minimum_version" || got[0].Old != "" || got[0].New != "27.0.1" {
 		t.Errorf("got %+v, want only macos_updates.minimum_version \"\" -> 27.0.1", got)
 	}
@@ -4035,7 +4035,7 @@ func TestDiffFlatRedactsSecrets(t *testing.T) {
 	proposed := map[string]any{"config": map[string]any{"options": map[string]any{
 		"aws_secret_access_key": "new-secret", "logger_tls_period": 20,
 	}}}
-	got := diffFlat("agent_options", "", proposed, api, nil, false)
+	got, _ := diffFlat("agent_options", "", proposed, api, nil, false)
 	for _, c := range got {
 		if strings.Contains(c.Old+c.New, "secret") && c.Key != "config.options.aws_secret_access_key" {
 			t.Errorf("leaked: %+v", c)

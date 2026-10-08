@@ -39,7 +39,7 @@ type DiffResult struct {
 	LabelChanges          ResourceDiff   // label definitions (global scope only)
 	Config                []ConfigChange // org_settings, agent_options, controls diffs
 	Errors                []string
-	SkippedConfigSections []string // config sections absent from API (e.g. "agent_options")
+	SkippedConfigSections []string // configured sections or keys the API does not report (e.g. "agent_options", "controls.windows_migration_enabled")
 }
 
 // ConfigChange represents a change in a top-level config section.
@@ -233,7 +233,7 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, globalMDM map[string]an
 	}
 
 	// The no-team file's controls are Fleet's global MDM settings.
-	result.Config = diffControls(globalMDM, proposed.Controls, nil)
+	result.Config, result.SkippedConfigSections = diffControls(globalMDM, proposed.Controls, nil)
 
 	// Fleet reports configured software only through the teams list, which
 	// excludes this bucket, so there is nothing to compare against. Say so
@@ -270,7 +270,8 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, globalMDM map[string]an
 			result.Policies = markDrift(result.Policies, base.Policies)
 			result.Profiles = markDrift(result.Profiles, base.Profiles)
 			result.Scripts = markDrift(result.Scripts, base.Scripts)
-			result.Config = markConfigDrift(result.Config, diffControls(globalMDM, baseTeam.Controls, nil))
+			baseConfig, _ := diffControls(globalMDM, baseTeam.Controls, nil)
+			result.Config = markConfigDrift(result.Config, baseConfig)
 			vlog(cfg.verbose, "[%s] after baseline drift marking: policies=%s profiles=%s scripts=%s",
 				proposed.Name, rdSummary(result.Policies), rdSummary(result.Profiles), rdSummary(result.Scripts))
 		} else {
@@ -1877,7 +1878,9 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]Conf
 			continue
 		}
 
-		changes = append(changes, diffFlat(section, "", proposedMap, apiSection, nil, false)...)
+		c, nr := diffFlat(section, "", proposedMap, apiSection, nil, false)
+		changes = append(changes, c...)
+		skipped = append(skipped, nr...)
 	}
 
 	return changes, skipped
@@ -1933,7 +1936,9 @@ func diffTeamSettings(current, proposed map[string]any) ([]ConfigChange, []strin
 			continue
 		}
 
-		changes = append(changes, diffFlat("settings", section+".", proposedMap, apiSection, nil, false)...)
+		c, nr := diffFlat("settings", section+".", proposedMap, apiSection, nil, false)
+		changes = append(changes, c...)
+		skipped = append(skipped, nr...)
 	}
 
 	// flattenMap walks maps in random order; sort so output is stable.
@@ -1950,14 +1955,15 @@ func diffTeamSettings(current, proposed map[string]any) ([]ConfigChange, []strin
 // Leaves that reference an env var are skipped: Fleet substitutes them, so the
 // stored value never matches. So are keys the API reports no value for, since
 // "" cannot be told apart from "not reported" (agent_options sub-keys,
-// sso_settings, ...). With reportEmpty, a key Fleet reports as "" is instead
+// sso_settings, ...). Keys the API does not report at all are returned as
+// notReported ("section.key"), so callers can say they were not diffed.
+// With reportEmpty, a key Fleet reports as "" is instead
 // an unset value being set (first-time macos_updates enforcement), unless the
 // proposed value is a file path, which Fleet stores by name and reports as "".
 //
 // Values under a secret-looking key are compared but rendered as (redacted):
 // the output is posted to MRs.
-func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, apiKey func(string) string, reportEmpty bool) []ConfigChange {
-	var changes []ConfigChange
+func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, apiKey func(string) string, reportEmpty bool) (changes []ConfigChange, notReported []string) {
 	flattenMap(proposed, "", func(key, proposedVal string) {
 		if containsEnvVar(proposedVal) || proposedVal == "<nil>" || proposedVal == "" {
 			return
@@ -1967,7 +1973,11 @@ func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, ap
 			lookup = apiKey(key)
 		}
 		apiVal, found := lookupNested(apiSection, lookup)
-		if !found || apiVal == "<nil>" {
+		if !found {
+			notReported = append(notReported, section+"."+keyPrefix+key)
+			return
+		}
+		if apiVal == "<nil>" {
 			return
 		}
 		if apiVal == "" && (!reportEmpty || strings.ContainsAny(proposedVal, `/\`)) {
@@ -1992,7 +2002,8 @@ func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, ap
 	})
 	// flattenMap walks maps in random order; sort so output is stable.
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
-	return changes
+	sort.Strings(notReported)
+	return changes, notReported
 }
 
 // secretKeyPattern matches any segment of a settings key path that names a
@@ -2050,10 +2061,10 @@ func teamControlsAPIKey(key string) string {
 // diffControls compares a team file's controls (minus scripts and profiles)
 // with an mdm object: the team's for a real team, global config's for the
 // no-team bucket. apiKey renames keys for the team API; nil for global.
-func diffControls(mdm, controls map[string]any, apiKey func(string) string) []ConfigChange {
+func diffControls(mdm, controls map[string]any, apiKey func(string) string) ([]ConfigChange, []string) {
 	rest := settingsControls(controls)
 	if len(rest) == 0 || mdm == nil {
-		return nil
+		return nil, nil
 	}
 	return diffFlat("controls", "", rest, mdm, apiKey, true)
 }
@@ -2076,14 +2087,16 @@ func diffTeamConfig(current map[string]any, team parser.ParsedTeam) ([]ConfigCha
 	changes, skipped := diffTeamSettings(current, team.Settings)
 	if len(settingsControls(team.Controls)) > 0 {
 		if mdm, ok := current["mdm"].(map[string]any); ok {
-			changes = append(changes, diffControls(mdm, team.Controls, teamControlsAPIKey)...)
+			c, nr := diffControls(mdm, team.Controls, teamControlsAPIKey)
+			changes, skipped = append(changes, c...), append(skipped, nr...)
 		} else {
 			skipped = append(skipped, "controls")
 		}
 	}
 	if len(team.AgentOptions) > 0 {
 		if agent, ok := current["agent_options"].(map[string]any); ok {
-			changes = append(changes, diffFlat("agent_options", "", team.AgentOptions, agent, nil, false)...)
+			c, nr := diffFlat("agent_options", "", team.AgentOptions, agent, nil, false)
+			changes, skipped = append(changes, c...), append(skipped, nr...)
 		} else {
 			skipped = append(skipped, "agent_options")
 		}

@@ -113,7 +113,7 @@ Label scoping lists (`labels_include_any` etc.) are compared as sets: order is i
 
 Category names are normalized before comparison. Fleet reports them as display names with an emoji prefix (`🔐 Security`), while fleet-gitops YAML writes them plainly (`Security`); only leading symbols are stripped, so a category starting with a letter or digit (`1Password`) is untouched.
 
-Numbers are compared in plain decimal: JSON decodes every number as float64, which `fmt` would print as `2.62144e+07`. In JSON values, a `teams` key is treated as the legacy spelling of `fleets` (Fleet 4.92 returns both on VPP tokens).
+Configured keys the API does not report at all are not guessed at: they are listed in a "Not diffed" note (keys that are present but empty are still skipped silently). Numbers are compared in plain decimal: JSON decodes every number as float64, which `fmt` would print as `2.62144e+07`. In JSON values, a `teams` key is treated as the legacy spelling of `fleets` (Fleet 4.92 returns both on VPP tokens).
 
 Whitespace is normalized before comparison to avoid false positives from YAML vs API newline differences. Per-field diffs are stored in `ResourceChange.Fields` for both added and modified resources.
 
