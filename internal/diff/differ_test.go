@@ -3841,3 +3841,52 @@ func TestDiffNewTeamBaselineDrift(t *testing.T) {
 		t.Errorf("queries added: got %+v, want Q flagged", q)
 	}
 }
+
+// Fleet 4.92 renamed a VPP token's `teams` to `fleets` and returns both, with
+// the same members. YAML with only `fleets` (or only the old `teams`) must not
+// read as a change to volume_purchasing_program.
+func TestDiffConfigVPPTeamsAlias(t *testing.T) {
+	api := map[string]any{"mdm": map[string]any{"volume_purchasing_program": []any{
+		map[string]any{"location": "Fleet macOS", "fleets": []any{"Workstations"}, "teams": []any{"Workstations"}},
+	}}}
+	tests := []struct {
+		name  string
+		entry map[string]any
+		want  int
+	}{
+		{"fleets only", map[string]any{"location": "Fleet macOS", "fleets": []any{"Workstations"}}, 0},
+		{"legacy teams only", map[string]any{"location": "Fleet macOS", "teams": []any{"Workstations"}}, 0},
+		{"real membership change", map[string]any{"location": "Fleet macOS", "fleets": []any{"Servers"}}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proposed := &parser.ParsedGlobal{OrgSettings: map[string]any{
+				"mdm": map[string]any{"volume_purchasing_program": []any{tt.entry}},
+			}}
+			changes, _ := diffConfig(api, proposed)
+			if len(changes) != tt.want {
+				t.Errorf("got %d changes %+v, want %d", len(changes), changes, tt.want)
+			}
+		})
+	}
+}
+
+func TestFoldTeamsAlias(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"both equal drops teams", `{"fleets":["a"],"teams":["a"]}`, `{"fleets":["a"]}`},
+		{"lone teams renamed", `{"teams":["a"]}`, `{"fleets":["a"]}`},
+		{"differing teams kept", `{"fleets":["a"],"teams":["b"]}`, `{"fleets":["a"],"teams":["b"]}`},
+		{"no teams untouched", `{"fleets":["a"]}`, `{"fleets":["a"]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeJSON(tt.in); got != tt.want {
+				t.Errorf("got %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
