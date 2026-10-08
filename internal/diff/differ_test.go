@@ -3798,3 +3798,46 @@ func TestDiffLabelsEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// A team on the base branch but not yet in Fleet: identical additions are
+// drift, but one the MR edited is still the MR's change.
+func TestDiffNewTeamBaselineDrift(t *testing.T) {
+	current := &api.FleetState{Teams: []api.Team{}, Labels: []api.Label{}}
+	baseline := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "New",
+		SourceFile: "teams/new.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Same", Query: "SELECT 1;"},
+			{Name: "Edited", Query: "SELECT 1;"},
+		},
+		Queries: []parser.ParsedQuery{{Name: "Q", Query: "SELECT 1;", Interval: 60}},
+	}}}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "New",
+		SourceFile: "teams/new.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Same", Query: "SELECT 1;"},
+			{Name: "Edited", Query: "SELECT 2;"},
+			{Name: "Mine", Query: "SELECT 3;"},
+		},
+		Queries: []parser.ParsedQuery{{Name: "Q", Query: "SELECT 1;", Interval: 60}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil, WithBaseline(baseline))[0]
+	drift := map[string]bool{}
+	for _, c := range r.Policies.Added {
+		drift[c.Name] = c.Drift
+	}
+	want := map[string]bool{"Same": true, "Edited": false, "Mine": false}
+	if len(drift) != len(want) {
+		t.Fatalf("policies added: got %+v", r.Policies.Added)
+	}
+	for name, w := range want {
+		if drift[name] != w {
+			t.Errorf("policy %q: Drift got %v, want %v", name, drift[name], w)
+		}
+	}
+	if q := r.Queries.Added; len(q) != 1 || !q[0].Drift {
+		t.Errorf("queries added: got %+v, want Q flagged", q)
+	}
+}
