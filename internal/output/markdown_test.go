@@ -377,6 +377,40 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			},
 			wantNone: []string{"No changes detected"},
 		},
+		{
+			name: "single drifted label uses singular note",
+			results: []diff.DiffResult{{
+				Team:         "(global)",
+				LabelChanges: diff.ResourceDiff{Modified: []diff.ResourceChange{{Name: "pilots", Drift: true}}},
+			}},
+			wantAll: []string{
+				"| MODIFIED | Global | Label | **pilots** | " + driftNote + " |",
+				"(1 not from this change)",
+				"1 change marked _not from this change_ already differs",
+				"applies it too",
+			},
+		},
+		{
+			name: "drift is flagged as not from this change",
+			results: []diff.DiffResult{{
+				Team: "Workstations",
+				Config: []diff.ConfigChange{
+					{Section: "settings", Key: "a", Old: "x", New: "y", Drift: true},
+				},
+				Profiles: diff.ResourceDiff{
+					Added:   []diff.ResourceChange{{Name: "Mine"}},
+					Deleted: []diff.ResourceChange{{Name: "TEST ACME Renewal ID", Drift: true, Warning: "w"}},
+				},
+			}},
+			wantAll: []string{
+				"| ADDED | Workstations | Profile | **Mine** |  |",
+				"| REMOVED | Workstations | Profile | **TEST ACME Renewal ID** | " + driftNote + " ⚠️ w |",
+				"| MODIFIED | Workstations | Config | **settings.a** | " + driftNote + " `x` → `y` |",
+				"**1 added, 1 modified, 1 deleted** (2 not from this change)",
+				"2 changes marked _not from this change_",
+			},
+			wantNone: []string{"Unexpected changes?"},
+		},
 	}
 
 	for _, tt := range tests {

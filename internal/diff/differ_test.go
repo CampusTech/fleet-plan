@@ -1887,9 +1887,9 @@ func TestDiffScriptChangedFileFilter(t *testing.T) {
 	}
 }
 
-// ---------- Baseline subtraction tests ----------
+// ---------- Baseline drift tests ----------
 
-func TestSubtractResourceDiff(t *testing.T) {
+func TestMarkDrift(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1905,19 +1905,19 @@ func TestSubtractResourceDiff(t *testing.T) {
 			want:     ResourceDiff{Added: []ResourceChange{{Name: "A"}}},
 		},
 		{
-			name:     "subtract matching delete",
+			name:     "flag matching delete",
 			total:    ResourceDiff{Deleted: []ResourceChange{{Name: "old-policy"}, {Name: "mr-policy"}}},
 			baseline: ResourceDiff{Deleted: []ResourceChange{{Name: "old-policy"}}},
-			want:     ResourceDiff{Deleted: []ResourceChange{{Name: "mr-policy"}}},
+			want:     ResourceDiff{Deleted: []ResourceChange{{Name: "old-policy", Drift: true}, {Name: "mr-policy"}}},
 		},
 		{
-			name:     "subtract matching add",
+			name:     "flag matching add",
 			total:    ResourceDiff{Added: []ResourceChange{{Name: "base-add"}, {Name: "mr-add"}}},
 			baseline: ResourceDiff{Added: []ResourceChange{{Name: "base-add"}}},
-			want:     ResourceDiff{Added: []ResourceChange{{Name: "mr-add"}}},
+			want:     ResourceDiff{Added: []ResourceChange{{Name: "base-add", Drift: true}, {Name: "mr-add"}}},
 		},
 		{
-			name: "subtract identical modify",
+			name: "flag identical modify",
 			total: ResourceDiff{Modified: []ResourceChange{
 				{Name: "same-mod", Fields: map[string]FieldDiff{"query": {Old: "a", New: "b"}}},
 				{Name: "mr-mod", Fields: map[string]FieldDiff{"query": {Old: "x", New: "y"}}},
@@ -1926,11 +1926,24 @@ func TestSubtractResourceDiff(t *testing.T) {
 				{Name: "same-mod", Fields: map[string]FieldDiff{"query": {Old: "a", New: "b"}}},
 			}},
 			want: ResourceDiff{Modified: []ResourceChange{
+				{Name: "same-mod", Fields: map[string]FieldDiff{"query": {Old: "a", New: "b"}}, Drift: true},
 				{Name: "mr-mod", Fields: map[string]FieldDiff{"query": {Old: "x", New: "y"}}},
 			}},
 		},
 		{
-			name: "keep modify with different fields",
+			name: "add with different fields is not drift",
+			total: ResourceDiff{Added: []ResourceChange{
+				{Name: "P", Fields: map[string]FieldDiff{"query": {New: "Q2"}}},
+			}},
+			baseline: ResourceDiff{Added: []ResourceChange{
+				{Name: "P", Fields: map[string]FieldDiff{"query": {New: "Q1"}}},
+			}},
+			want: ResourceDiff{Added: []ResourceChange{
+				{Name: "P", Fields: map[string]FieldDiff{"query": {New: "Q2"}}},
+			}},
+		},
+		{
+			name: "modify with different fields is not drift",
 			total: ResourceDiff{Modified: []ResourceChange{
 				{Name: "evolved", Fields: map[string]FieldDiff{"query": {Old: "a", New: "c"}}},
 			}},
@@ -1946,18 +1959,25 @@ func TestSubtractResourceDiff(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := subtractResourceDiff(tt.total, tt.baseline)
+			got := markDrift(tt.total, tt.baseline)
 			assertResourceDiffEqual(t, tt.want, got)
+			for _, pair := range [][2][]ResourceChange{{tt.want.Added, got.Added}, {tt.want.Modified, got.Modified}, {tt.want.Deleted, got.Deleted}} {
+				for i := range pair[0] {
+					if pair[0][i].Drift != pair[1][i].Drift {
+						t.Errorf("%s: Drift got %v, want %v", pair[0][i].Name, pair[1][i].Drift, pair[0][i].Drift)
+					}
+				}
+			}
 		})
 	}
 }
 
-func TestDiffWithBaselineSubtraction(t *testing.T) {
+func TestDiffWithBaselineDrift(t *testing.T) {
 	t.Parallel()
 
 	// Simulate: base branch already removed "old-policy" and modified "shared-query".
 	// MR adds "new-query" and removes "mr-removed-policy".
-	// Only the MR's changes should appear.
+	// The base branch's changes stay in the diff but are flagged as drift.
 
 	current := &api.FleetState{
 		Teams: []api.Team{
@@ -2017,25 +2037,27 @@ func TestDiffWithBaselineSubtraction(t *testing.T) {
 	}
 	r := results[0]
 
-	// old-policy deletion should be subtracted (already in base).
-	if len(r.Policies.Deleted) != 1 {
-		t.Fatalf("expected 1 deleted policy (mr-removed-policy), got %d: %+v", len(r.Policies.Deleted), r.Policies.Deleted)
+	// old-policy deletion is already on the base branch: kept, flagged.
+	// mr-removed-policy is this MR's own deletion: unflagged.
+	drift := map[string]bool{}
+	for _, c := range r.Policies.Deleted {
+		drift[c.Name] = c.Drift
 	}
-	if r.Policies.Deleted[0].Name != "mr-removed-policy" {
-		t.Errorf("deleted policy name: got %q, want mr-removed-policy", r.Policies.Deleted[0].Name)
+	if len(drift) != 2 || !drift["old-policy"] || drift["mr-removed-policy"] {
+		t.Fatalf("deleted policies: got %+v, want old-policy (drift) and mr-removed-policy", r.Policies.Deleted)
 	}
 
-	// shared-query modification should be subtracted (same diff in base).
-	if len(r.Queries.Modified) != 0 {
-		t.Errorf("expected 0 modified queries (subtracted), got %d: %+v", len(r.Queries.Modified), r.Queries.Modified)
+	// shared-query modification has the same diff on the base branch: flagged.
+	if len(r.Queries.Modified) != 1 || !r.Queries.Modified[0].Drift {
+		t.Errorf("expected shared-query modified and flagged as drift, got %+v", r.Queries.Modified)
 	}
 
 	// new-query addition should remain (not in base).
 	if len(r.Queries.Added) != 1 {
 		t.Fatalf("expected 1 added query (new-query), got %d", len(r.Queries.Added))
 	}
-	if r.Queries.Added[0].Name != "new-query" {
-		t.Errorf("added query name: got %q, want new-query", r.Queries.Added[0].Name)
+	if r.Queries.Added[0].Name != "new-query" || r.Queries.Added[0].Drift {
+		t.Errorf("added query: got %+v, want new-query without drift", r.Queries.Added[0])
 	}
 }
 
@@ -2362,9 +2384,12 @@ func findTeam(t *testing.T, results []DiffResult, name string) *DiffResult {
 	return nil
 }
 
-func TestSubtractConfigChanges(t *testing.T) {
+func TestMarkConfigDrift(t *testing.T) {
 	change := func(section, key, old, new string) ConfigChange {
 		return ConfigChange{Section: section, Key: key, Old: old, New: new}
+	}
+	drift := func(section, key, old, new string) ConfigChange {
+		return ConfigChange{Section: section, Key: key, Old: old, New: new, Drift: true}
 	}
 
 	tests := []struct {
@@ -2379,19 +2404,22 @@ func TestSubtractConfigChanges(t *testing.T) {
 			want:  []ConfigChange{change("org_settings", "server_settings.server_url", "a", "b")},
 		},
 		{
-			name:     "identical change is subtracted",
+			name:     "identical change is flagged",
 			total:    []ConfigChange{change("org_settings", "k", "a", "b")},
 			baseline: []ConfigChange{change("org_settings", "k", "a", "b")},
-			want:     nil,
+			want:     []ConfigChange{drift("org_settings", "k", "a", "b")},
 		},
 		{
-			name: "only the pre-existing change is subtracted",
+			name: "only the pre-existing change is flagged",
 			total: []ConfigChange{
 				change("org_settings", "k1", "a", "b"),
 				change("agent_options", "k2", "c", "d"),
 			},
 			baseline: []ConfigChange{change("org_settings", "k1", "a", "b")},
-			want:     []ConfigChange{change("agent_options", "k2", "c", "d")},
+			want: []ConfigChange{
+				drift("org_settings", "k1", "a", "b"),
+				change("agent_options", "k2", "c", "d"),
+			},
 		},
 		{
 			name:     "same key with a different new value is kept",
@@ -2409,7 +2437,7 @@ func TestSubtractConfigChanges(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := subtractConfigChanges(tt.total, tt.baseline)
+			got := markConfigDrift(tt.total, tt.baseline)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d changes %+v, want %d %+v", len(got), got, len(tt.want), tt.want)
 			}
@@ -2843,8 +2871,8 @@ func TestDiffNoTeamSoftwareIsReportedAsSkipped(t *testing.T) {
 }
 
 // A no-team change that is already merged to the base branch but not yet
-// deployed must not be reported again on every later MR.
-func TestDiffNoTeamBaselineSubtraction(t *testing.T) {
+// deployed is flagged as drift, not attributed to every later MR.
+func TestDiffNoTeamBaselineDrift(t *testing.T) {
 	current := &api.FleetState{
 		Teams:  []api.Team{},
 		Labels: []api.Label{},
@@ -2880,11 +2908,15 @@ func TestDiffNoTeamBaselineSubtraction(t *testing.T) {
 
 	r := Diff(current, proposed, nil, nil, WithBaseline(baseline))[0]
 
-	if len(r.Policies.Added) != 1 || r.Policies.Added[0].Name != "New in this MR" {
-		t.Errorf("policies added: got %+v, want only the MR's own addition", r.Policies.Added)
+	drift := map[string]bool{}
+	for _, c := range r.Policies.Added {
+		drift[c.Name] = c.Drift
 	}
-	if !r.Scripts.IsEmpty() {
-		t.Errorf("scripts: got %+v, want empty (the edit is already on the base branch)", r.Scripts)
+	if len(drift) != 2 || !drift["Merged not deployed"] || drift["New in this MR"] {
+		t.Errorf("policies added: got %+v, want the base branch's addition flagged and the MR's own unflagged", r.Policies.Added)
+	}
+	if m := r.Scripts.Modified; len(m) != 1 || !m[0].Drift {
+		t.Errorf("scripts: got %+v, want keep.sh flagged (the edit is already on the base branch)", r.Scripts)
 	}
 }
 
@@ -3764,5 +3796,48 @@ func TestDiffLabelsEdgeCases(t *testing.T) {
 				t.Errorf("got %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+// A team on the base branch but not yet in Fleet: identical additions are
+// drift, but one the MR edited is still the MR's change.
+func TestDiffNewTeamBaselineDrift(t *testing.T) {
+	current := &api.FleetState{Teams: []api.Team{}, Labels: []api.Label{}}
+	baseline := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "New",
+		SourceFile: "teams/new.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Same", Query: "SELECT 1;"},
+			{Name: "Edited", Query: "SELECT 1;"},
+		},
+		Queries: []parser.ParsedQuery{{Name: "Q", Query: "SELECT 1;", Interval: 60}},
+	}}}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
+		Name:       "New",
+		SourceFile: "teams/new.yml",
+		Policies: []parser.ParsedPolicy{
+			{Name: "Same", Query: "SELECT 1;"},
+			{Name: "Edited", Query: "SELECT 2;"},
+			{Name: "Mine", Query: "SELECT 3;"},
+		},
+		Queries: []parser.ParsedQuery{{Name: "Q", Query: "SELECT 1;", Interval: 60}},
+	}}}
+
+	r := Diff(current, proposed, nil, nil, WithBaseline(baseline))[0]
+	drift := map[string]bool{}
+	for _, c := range r.Policies.Added {
+		drift[c.Name] = c.Drift
+	}
+	want := map[string]bool{"Same": true, "Edited": false, "Mine": false}
+	if len(drift) != len(want) {
+		t.Fatalf("policies added: got %+v", r.Policies.Added)
+	}
+	for name, w := range want {
+		if drift[name] != w {
+			t.Errorf("policy %q: Drift got %v, want %v", name, drift[name], w)
+		}
+	}
+	if q := r.Queries.Added; len(q) != 1 || !q[0].Drift {
+		t.Errorf("queries added: got %+v, want Q flagged", q)
 	}
 }

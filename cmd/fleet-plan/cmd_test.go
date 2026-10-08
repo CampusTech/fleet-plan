@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -612,6 +614,57 @@ func TestRunDiffGitModePostsComment(t *testing.T) {
 	}
 }
 
+// When the MR's base commit already has the same YAML, every difference from
+// Fleet predates the MR, so the comment must flag each one as drift.
+func TestRunDiffGitModeFlagsBaselineDrift(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.CopyFS(repo, os.DirFS(filepath.Join("..", "..", "testdata"))); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "-A"},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	head, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fleet := stubFleetAPI(t)
+	gitlab := gitLabStub(t, []string{"teams/workstations.yml"})
+	t.Setenv("FLEET_PLAN_INSECURE", "1")
+	t.Setenv("FLEET_URL", fleet.URL)
+	t.Setenv("FLEET_TOKEN", "test-token")
+	t.Setenv("HOME", t.TempDir())
+	setGitLabEnv(t, gitlab.URL)
+	t.Setenv("CI_MERGE_REQUEST_DIFF_BASE_SHA", strings.TrimSpace(string(head)))
+
+	out, err := runCLI(t, "--repo", repo, "--git", "--format", "markdown", "--no-color")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	rows := 0
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "| ADDED |") && !strings.HasPrefix(line, "| MODIFIED |") && !strings.HasPrefix(line, "| REMOVED |") {
+			continue
+		}
+		rows++
+		if !strings.Contains(line, "not from this change") {
+			t.Errorf("row not flagged as drift: %s", line)
+		}
+	}
+	if rows == 0 {
+		t.Fatalf("expected change rows, got:\n%s", out)
+	}
+}
+
 func TestRunDiffGitModeSkipsWhenNoFleetFilesChanged(t *testing.T) {
 	fleet := stubFleetAPI(t)
 	gitlab := gitLabStub(t, []string{"README.md", ".gitlab-ci.yml"})
@@ -786,6 +839,39 @@ func TestHasNoTeam(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := hasNoTeam(tt.teams); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A PR that changes only a lib/ file still scopes to the team that references
+// it. The baseline must carry that team's file, or the team has no baseline
+// and drift (e.g. a profile uploaded outside gitops) reads as the PR's change.
+func TestBaselineFiles(t *testing.T) {
+	root := t.TempDir()
+	teams := []parser.ParsedTeam{
+		{Name: "Workstations", SourceFile: filepath.Join(root, "teams", "workstations.yml")},
+		{Name: "Servers", SourceFile: filepath.Join(root, "teams", "servers.yml")},
+	}
+	changed := []string{"lib/macos/scripts/notify.sh", "teams/servers.yml"}
+
+	teamFiles := []string{"lib/macos/scripts/notify.sh", "teams/servers.yml", "teams/workstations.yml"}
+	tests := []struct {
+		name          string
+		includeGlobal bool
+		base          string
+		want          []string
+	}{
+		{name: "teams only", want: teamFiles},
+		{name: "global uses default.yml", includeGlobal: true, want: append(slices.Clone(teamFiles), "default.yml")},
+		{name: "global uses --base", includeGlobal: true, base: "base.yml", want: append(slices.Clone(teamFiles), "base.yml")},
+		{name: "base ignored without global", base: "base.yml", want: teamFiles},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := baselineFiles(root, changed, teams, tt.includeGlobal, tt.base)
+			if !slices.Equal(got, tt.want) {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})

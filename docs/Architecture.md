@@ -89,7 +89,7 @@ Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also pa
 
 Compares `FleetState` (API) vs `ParsedRepo` (YAML). Produces `[]DiffResult` per team + a `(global)` result when `default.yml` is present.
 
-Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched separately (`team_id=0`) and diffed like any other team for policies, profiles, and scripts, baseline subtraction included. Software and queries are reported as skipped there: Fleet exposes configured software only through the teams list, and scopes queries to a real team or the global scope. When the bucket was not fetched, the diff falls back to summarizing what the repo configures for it.
+Fleet's "hosts on no team" bucket is absent from `GET /teams`, so it is fetched separately (`team_id=0`) and diffed like any other team for policies, profiles, and scripts, baseline drift flagging included. Software and queries are reported as skipped there: Fleet exposes configured software only through the teams list, and scopes queries to a real team or the global scope. When the bucket was not fetched, the diff falls back to summarizing what the repo configures for it.
 
 | Resource | Match key | Diff fields |
 |----------|-----------|-------------|
@@ -142,7 +142,8 @@ When `--git` is active, the `git` package detects the CI platform and drives the
    - `git diff`: if the API call fails or the env vars are missing, fall back to diffing against the merge base locally.
    - Full diff: if git is unavailable, diff all teams (no file filtering).
 3. **Team scope inference:** `scope.go` maps changed file paths back to `teams/*.yml` entries so only affected teams are diffed.
-4. **Comment posting:** posts (or updates) a Markdown comment on the MR/PR. GitLab uses `FLEET_PLAN_BOT`, GitHub uses `GITHUB_TOKEN`.
+4. **Baseline drift:** fleet-plan extracts (`git show`) the base-branch versions of the changed files, every in-scope team file, and `default.yml` (or `--base`) when global config is in scope, and diffs them against Fleet too. A change that already appears there was not introduced by the MR/PR: it was made outside gitops (UI/API) or merged but not yet deployed. It stays in the output, since applying the MR applies it too, but is flagged `Drift` and rendered as *not from this change* (`"drift": true` in JSON).
+5. **Comment posting:** posts (or updates) a Markdown comment on the MR/PR. GitLab uses `FLEET_PLAN_BOT`, GitHub uses `GITHUB_TOKEN`.
 
 ---
 

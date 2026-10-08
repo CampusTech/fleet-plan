@@ -355,6 +355,25 @@ func TestRenderFieldLines(t *testing.T) {
 
 // ---------- renderChangeList ----------
 
+func TestRenderConfigChangesDrift(t *testing.T) {
+	out := stripANSI(renderConfigChanges([]diff.ConfigChange{
+		{Section: "org_settings", Key: "added", New: "v", Drift: true},
+		{Section: "org_settings", Key: "changed", Old: "a", New: "b", Drift: true},
+		{Section: "org_settings", Key: "mine", Old: "a", New: "b"},
+	}, &DiffSummary{}, false))
+	for _, want := range []string{
+		"+ org_settings.added (not from this change)",
+		"~ org_settings.changed (not from this change)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "org_settings.mine (not from this change)") {
+		t.Errorf("unflagged change tagged as drift:\n%s", out)
+	}
+}
+
 func TestRenderChangeList(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -380,6 +399,9 @@ func TestRenderChangeList(t *testing.T) {
 			wantAll: []string{"~", "ChangedItem", "key:"},
 		},
 		{name: "deleted with host count", items: []diff.ResourceChange{{Name: "CriticalPolicy", HostCount: 500}}, changeType: "deleted", wantAll: []string{"CriticalPolicy", "500 hosts"}},
+		{name: "drift is tagged", items: []diff.ResourceChange{{Name: "Drifted", Drift: true}}, changeType: "deleted", wantAll: []string{"- Drifted (not from this change)"}},
+		{name: "added drift tagged after host count", items: []diff.ResourceChange{{Name: "A", HostCount: 3, Drift: true}}, changeType: "added", wantAll: []string{"+ A (~3 hosts) (not from this change)"}},
+		{name: "modified drift tagged after warning", items: []diff.ResourceChange{{Name: "M", Warning: "+2", Drift: true}}, changeType: "modified", wantAll: []string{"~ M (+2) (not from this change)"}},
 		{name: "deleted with warning", items: []diff.ResourceChange{{Name: "DangerPolicy", Warning: "affects production hosts"}}, changeType: "deleted", wantAll: []string{"DangerPolicy", "affects production hosts"}},
 		{
 			name:       "added verbose shows fields",
