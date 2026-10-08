@@ -113,13 +113,20 @@ type ParsedTeam struct {
 	// `team_settings:` spelling) as a nested map: webhook_settings,
 	// host_expiry_settings, integrations, features. Diffed field by field
 	// against the matching keys on the Fleet team object.
-	Settings   map[string]any
-	Policies   []ParsedPolicy
-	Queries    []ParsedQuery
-	Software   ParsedSoftware
-	Profiles   []ParsedProfile
-	Scripts    []ParsedScript
-	SourceFile string
+	Settings map[string]any
+	// Controls holds the team's `controls:` block as a nested map. Scripts
+	// and profiles are also resolved into Scripts and Profiles; the rest
+	// (macos_updates, enable_disk_encryption, ...) is diffed as settings.
+	Controls map[string]any
+	// AgentOptions holds the team's `agent_options:`, with a `path:`
+	// reference already replaced by the file it points to.
+	AgentOptions map[string]any
+	Policies     []ParsedPolicy
+	Queries      []ParsedQuery
+	Software     ParsedSoftware
+	Profiles     []ParsedProfile
+	Scripts      []ParsedScript
+	SourceFile   string
 }
 
 // ParsedScript represents a script under controls.scripts.
@@ -365,6 +372,29 @@ func decodeSettingsNode(nodes ...yaml.Node) map[string]any {
 	return nil
 }
 
+// resolveAgentOptions follows an `agent_options: path:` reference, relative to
+// dir and confined to root, and returns the referenced file's mapping. A block
+// without path: is returned as is. Keys next to path: are an error rather than
+// silently dropped (a --base/--env merge can produce them).
+func resolveAgentOptions(root, dir, parentFile string, m map[string]any) (map[string]any, []ParseError) {
+	ref, ok := m["path"].(string)
+	if !ok {
+		return m, nil
+	}
+	if len(m) > 1 {
+		return nil, []ParseError{{File: parentFile, Message: "agent_options: path: cannot be combined with other keys"}}
+	}
+	data, _, errs := readYAMLRef(root, dir, ref, parentFile, "agent_options ")
+	if errs != nil {
+		return nil, errs
+	}
+	var out map[string]any
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		return nil, []ParseError{{File: parentFile, Message: fmt.Sprintf("agent_options path reference %q: %s", ref, err)}}
+	}
+	return out, nil
+}
+
 // IsNoTeam reports whether a parsed team file describes Fleet's special
 // "hosts not assigned to any team" bucket rather than a real team.
 //
@@ -481,8 +511,15 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 	team := &ParsedTeam{
 		Name:       raw.Name,
 		Settings:   decodeSettingsNode(raw.Settings, raw.TeamSettings),
+		Controls:   decodeSettingsNode(rawMap["controls"]),
 		SourceFile: path,
 	}
+	if k := raw.AgentOptions.Kind; k != 0 && k != yaml.MappingNode && raw.AgentOptions.Tag != "!!null" {
+		errs = append(errs, ParseError{File: path, Message: "agent_options must be a mapping"})
+	}
+	agentOptions, aoErrs := resolveAgentOptions(root, filepath.Dir(path), path, decodeSettingsNode(raw.AgentOptions))
+	errs = append(errs, aoErrs...)
+	team.AgentOptions = agentOptions
 
 	dir := filepath.Dir(path)
 	seenSoftwareRefs := make(map[string]bool)
@@ -935,9 +972,13 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 			global.OrgSettings = m
 		}
 	}
-	if v, ok := rawMap["agent_options"]; ok {
+	if v, ok := rawMap["agent_options"]; ok && v != nil {
 		if m, ok := v.(map[string]any); ok {
-			global.AgentOptions = m
+			resolved, aoErrs := resolveAgentOptions(root, dir, path, m)
+			errs = append(errs, aoErrs...)
+			global.AgentOptions = resolved
+		} else {
+			errs = append(errs, ParseError{File: path, Message: "agent_options must be a mapping"})
 		}
 	}
 	if v, ok := rawMap["controls"]; ok {

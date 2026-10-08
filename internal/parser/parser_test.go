@@ -1334,3 +1334,121 @@ team_settings: {}
 		t.Errorf("explicit empty categories: got %#v, want non-nil empty slice", c)
 	}
 }
+
+// A team's controls (beyond scripts and profiles) and its agent_options are
+// kept as nested maps for diffing. agent_options: path: is followed, for team
+// files and default.yml alike.
+func TestParseRepoControlsAndAgentOptions(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"fleets/workstations.yml": `name: Workstations
+agent_options:
+  path: ../lib/agent-options.yml
+controls:
+  enable_disk_encryption: true
+  macos_updates:
+    minimum_version: "27.0.1"
+`,
+		"lib/agent-options.yml": "config:\n  options:\n    distributed_interval: 10\n",
+		"default.yml":           "agent_options:\n  path: ./lib/agent-options.yml\n",
+	} {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) > 0 || len(repo.Teams) != 1 {
+		t.Fatalf("teams=%d errors=%v", len(repo.Teams), repo.Errors)
+	}
+	team := repo.Teams[0]
+	if team.Controls["enable_disk_encryption"] != true {
+		t.Errorf("controls: got %v", team.Controls)
+	}
+	if mu, _ := team.Controls["macos_updates"].(map[string]any); mu["minimum_version"] != "27.0.1" {
+		t.Errorf("controls.macos_updates: got %v", team.Controls["macos_updates"])
+	}
+	want := map[string]any{"config": map[string]any{"options": map[string]any{"distributed_interval": 10}}}
+	if !reflect.DeepEqual(team.AgentOptions, want) {
+		t.Errorf("team agent_options: got %v, want %v", team.AgentOptions, want)
+	}
+	if repo.Global == nil || !reflect.DeepEqual(repo.Global.AgentOptions, want) {
+		t.Errorf("global agent_options: got %v, want %v", repo.Global, want)
+	}
+}
+
+func TestParseRepoAgentOptionsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "fleets", "t.yml")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("name: T\nagent_options:\n  path: ../../../etc/passwd\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) == 0 {
+		t.Error("expected a path traversal error")
+	}
+	for _, team := range repo.Teams {
+		if team.AgentOptions != nil {
+			t.Errorf("agent_options read from outside the repo: %v", team.AgentOptions)
+		}
+	}
+}
+
+// A merged --base/--env file can carry inline keys next to path:. Silently
+// dropping them would hide the overlay's changes, so it is an error.
+func TestParseRepoAgentOptionsPathWithSiblings(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"fleets/t.yml": "name: T\nagent_options:\n  path: ../ao.yml\n  config:\n    options: {}\n",
+		"ao.yml":       "config: {}\n",
+	} {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) == 0 {
+		t.Error("expected an error for path: with sibling keys")
+	}
+}
+
+func TestParseRepoAgentOptionsNotAMapping(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "fleets", "t.yml")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("name: T\nagent_options: ../ao.yml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default.yml"), []byte("agent_options: ./ao.yml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 2 {
+		t.Errorf("want an error for each non-mapping agent_options (team and default.yml), got %v", repo.Errors)
+	}
+}
