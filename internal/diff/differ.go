@@ -2063,8 +2063,11 @@ func teamControlsAPIKey(key string) string {
 // no-team bucket. apiKey renames keys for the team API; nil for global.
 func diffControls(mdm, controls map[string]any, apiKey func(string) string) ([]ConfigChange, []string) {
 	rest := settingsControls(controls)
-	if len(rest) == 0 || mdm == nil {
+	if len(rest) == 0 {
 		return nil, nil
+	}
+	if mdm == nil {
+		return nil, []string{"controls"}
 	}
 	return diffFlat("controls", "", rest, mdm, apiKey, true)
 }

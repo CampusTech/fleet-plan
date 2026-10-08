@@ -378,6 +378,16 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantNone: []string{"No changes detected"},
 		},
 		{
+			// The note must not be hidden by a plan with nothing else in it,
+			// and must not turn such a plan into one with changes.
+			name: "not diffed note shows on a plan with no changes",
+			results: []diff.DiffResult{
+				{Team: "(global)", SkippedConfigSections: []string{"controls.windows_migration_enabled"}},
+			},
+			wantAll:  []string{"No changes detected", "ℹ️ Not diffed (Fleet does not report these, or the token cannot read them): `controls.windows_migration_enabled`"},
+			wantNone: []string{"| Change | Team"},
+		},
+		{
 			name: "settings Fleet does not report are listed as not diffed, not blamed on the token",
 			results: []diff.DiffResult{
 				{Team: "Workstations", SkippedConfigSections: []string{"controls.windows_migration_enabled"}, Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}}},

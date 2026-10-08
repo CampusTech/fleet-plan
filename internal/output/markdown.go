@@ -82,6 +82,9 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	if !HasChanges(results) {
 		sb.WriteString("No changes detected. Your branch matches the current Fleet state.\n")
+		if note := buildNotDiffedNote(results); note != "" {
+			fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
+		}
 		writeMarker(&sb, opts)
 		return sb.String()
 	}

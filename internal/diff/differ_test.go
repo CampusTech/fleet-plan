@@ -4074,3 +4074,13 @@ func TestIsSecretKey(t *testing.T) {
 		}
 	}
 }
+
+func TestDiffControlsWithoutMDM(t *testing.T) {
+	_, skipped := diffControls(nil, map[string]any{"enable_disk_encryption": true}, nil)
+	if !slices.Equal(skipped, []string{"controls"}) {
+		t.Errorf("skipped: got %v, want [controls]", skipped)
+	}
+	if _, skipped := diffControls(nil, map[string]any{"scripts": []any{}}, nil); skipped != nil {
+		t.Errorf("only scripts/profiles configured: got skipped %v, want none", skipped)
+	}
+}
