@@ -1431,3 +1431,24 @@ func TestParseRepoAgentOptionsPathWithSiblings(t *testing.T) {
 		t.Error("expected an error for path: with sibling keys")
 	}
 }
+
+func TestParseRepoAgentOptionsNotAMapping(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "fleets", "t.yml")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("name: T\nagent_options: ../ao.yml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default.yml"), []byte("agent_options: ./ao.yml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) != 2 {
+		t.Errorf("want an error for each non-mapping agent_options (team and default.yml), got %v", repo.Errors)
+	}
+}

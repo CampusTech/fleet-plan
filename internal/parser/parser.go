@@ -514,6 +514,9 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 		Controls:   decodeSettingsNode(rawMap["controls"]),
 		SourceFile: path,
 	}
+	if k := raw.AgentOptions.Kind; k != 0 && k != yaml.MappingNode && raw.AgentOptions.Tag != "!!null" {
+		errs = append(errs, ParseError{File: path, Message: "agent_options must be a mapping"})
+	}
 	agentOptions, aoErrs := resolveAgentOptions(root, filepath.Dir(path), path, decodeSettingsNode(raw.AgentOptions))
 	errs = append(errs, aoErrs...)
 	team.AgentOptions = agentOptions
@@ -969,11 +972,13 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 			global.OrgSettings = m
 		}
 	}
-	if v, ok := rawMap["agent_options"]; ok {
+	if v, ok := rawMap["agent_options"]; ok && v != nil {
 		if m, ok := v.(map[string]any); ok {
 			resolved, aoErrs := resolveAgentOptions(root, dir, path, m)
 			errs = append(errs, aoErrs...)
 			global.AgentOptions = resolved
+		} else {
+			errs = append(errs, ParseError{File: path, Message: "agent_options must be a mapping"})
 		}
 	}
 	if v, ok := rawMap["controls"]; ok {

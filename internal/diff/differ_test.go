@@ -4060,3 +4060,17 @@ func TestDiffConfigGlobalControlsSkipScriptsAndProfiles(t *testing.T) {
 		t.Errorf("got %+v, want profiles left to the profile diff", changes)
 	}
 }
+
+func TestIsSecretKey(t *testing.T) {
+	for key, want := range map[string]bool{
+		"config.options.aws_secret_access_key": true,
+		"credentials.aws.key":                  true,
+		"integrations.jira.api_token":          true,
+		"config.options.logger_tls_period":     false,
+		"macos_updates.minimum_version":        false,
+	} {
+		if got := isSecretKey(key); got != want {
+			t.Errorf("isSecretKey(%q) = %v, want %v", key, got, want)
+		}
+	}
+}

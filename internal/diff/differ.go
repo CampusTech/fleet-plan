@@ -1995,12 +1995,13 @@ func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, ap
 	return changes
 }
 
-// secretKeyPattern matches the last segment of a settings key that holds a
-// credential (aws_secret_access_key, enroll_secret, api_token, ...).
+// secretKeyPattern matches any segment of a settings key path that names a
+// credential (aws_secret_access_key, enroll_secret, api_token, ...), so
+// leaves nested under a credential block are covered too.
 var secretKeyPattern = regexp.MustCompile(`(?i)(secret|password|passwd|token|credential|private_key|access_key|api_key)`)
 
 func isSecretKey(key string) bool {
-	return secretKeyPattern.MatchString(key[strings.LastIndex(key, ".")+1:])
+	return secretKeyPattern.MatchString(key)
 }
 
 // redact hides a secret value, keeping "" so an unset value still reads as one.
