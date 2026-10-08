@@ -156,6 +156,28 @@ func TestDetectGitHubReadsPRNumberFromEventPayload(t *testing.T) {
 	}
 }
 
+// GitHub Actions never sets GITHUB_BASE_SHA, so without the event payload the
+// baseline was skipped on every GitHub run and drift was never flagged.
+func TestDetectGitHubReadsBaseSHAFromEventPayload(t *testing.T) {
+	const sha = "4279cc8a0b1c2d3e4f5061728394a5b6c7d8e9f0"
+	payload := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(payload, []byte(`{"pull_request":{"number":1,"base":{"sha":"`+sha+`"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	t.Setenv("GITHUB_BASE_SHA", "")
+	t.Setenv("GITHUB_EVENT_PATH", payload)
+	if got := Detect().DiffBaseSHA; got != sha {
+		t.Errorf("DiffBaseSHA: got %q, want %q", got, sha)
+	}
+
+	t.Setenv("GITHUB_BASE_SHA", "abc123")
+	if got := Detect().DiffBaseSHA; got != "abc123" {
+		t.Errorf("DiffBaseSHA: got %q, want the GITHUB_BASE_SHA override", got)
+	}
+}
+
 func TestParsePRNumberFromEvent(t *testing.T) {
 	tests := []struct {
 		name    string

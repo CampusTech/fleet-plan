@@ -102,7 +102,12 @@ func Detect() Env {
 		}
 		e.GitHubServerURL = os.Getenv("GITHUB_SERVER_URL")
 		e.GitHubToken = os.Getenv("GITHUB_TOKEN")
+		// GitHub Actions doesn't set GITHUB_BASE_SHA itself; it is an
+		// override. The event payload carries the PR's base commit.
 		e.DiffBaseSHA = os.Getenv("GITHUB_BASE_SHA")
+		if e.DiffBaseSHA == "" {
+			e.DiffBaseSHA = readEvent(os.Getenv("GITHUB_EVENT_PATH")).PullRequest.Base.SHA
+		}
 		e.TargetBranch = os.Getenv("GITHUB_BASE_REF")
 		return e
 	}
@@ -445,22 +450,7 @@ func githubHeaders(token string) map[string]string {
 
 // parsePRNumberFromEvent reads the GitHub event JSON file and extracts the PR number.
 func parsePRNumberFromEvent(eventPath string) string {
-	if eventPath == "" {
-		return ""
-	}
-	data, err := os.ReadFile(eventPath)
-	if err != nil {
-		return ""
-	}
-	var event struct {
-		PullRequest struct {
-			Number json.Number `json:"number"`
-		} `json:"pull_request"`
-		Number json.Number `json:"number"`
-	}
-	if err := json.Unmarshal(data, &event); err != nil {
-		return ""
-	}
+	event := readEvent(eventPath)
 	if n := event.PullRequest.Number.String(); n != "" && n != "0" {
 		return n
 	}
@@ -468,4 +458,32 @@ func parsePRNumberFromEvent(eventPath string) string {
 		return n
 	}
 	return ""
+}
+
+// githubEvent is the subset of the GitHub Actions event payload fleet-plan reads.
+type githubEvent struct {
+	PullRequest struct {
+		Number json.Number `json:"number"`
+		Base   struct {
+			SHA string `json:"sha"`
+		} `json:"base"`
+	} `json:"pull_request"`
+	Number json.Number `json:"number"`
+}
+
+// readEvent parses the event payload at eventPath. A missing or unreadable
+// payload yields the zero value.
+func readEvent(eventPath string) githubEvent {
+	var event githubEvent
+	if eventPath == "" {
+		return event
+	}
+	data, err := os.ReadFile(eventPath)
+	if err != nil {
+		return event
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return githubEvent{}
+	}
+	return event
 }
