@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -803,9 +804,24 @@ func TestBaselineFiles(t *testing.T) {
 	}
 	changed := []string{"lib/macos/scripts/notify.sh", "teams/servers.yml"}
 
-	got := baselineFiles(root, changed, teams, []string{"default.yml"})
-	want := []string{"lib/macos/scripts/notify.sh", "teams/servers.yml", "teams/workstations.yml", "default.yml"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("got %v, want %v", got, want)
+	teamFiles := []string{"lib/macos/scripts/notify.sh", "teams/servers.yml", "teams/workstations.yml"}
+	tests := []struct {
+		name          string
+		includeGlobal bool
+		base          string
+		want          []string
+	}{
+		{name: "teams only", want: teamFiles},
+		{name: "global uses default.yml", includeGlobal: true, want: append(slices.Clone(teamFiles), "default.yml")},
+		{name: "global uses --base", includeGlobal: true, base: "base.yml", want: append(slices.Clone(teamFiles), "base.yml")},
+		{name: "base ignored without global", base: "base.yml", want: teamFiles},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := baselineFiles(root, changed, teams, tt.includeGlobal, tt.base)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

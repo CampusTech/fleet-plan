@@ -148,14 +148,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	// Parse baseline (base branch) for subtraction when in --git mode.
 	var baseline *parser.ParsedRepo
 	if flagGit && len(changedFiles) > 0 && ci.DiffBaseSHA != "" {
-		var globalFiles []string
-		if includeGlobal {
-			globalFiles = []string{"default.yml"}
-			if flagBase != "" {
-				globalFiles = []string{flagBase}
-			}
-		}
-		baseRoot, baseCleanup, err := git.CheckoutBaseline(flagRepo, ci.DiffBaseSHA, baselineFiles(flagRepo, changedFiles, repo.Teams, globalFiles))
+		baseRoot, baseCleanup, err := git.CheckoutBaseline(flagRepo, ci.DiffBaseSHA, baselineFiles(flagRepo, changedFiles, repo.Teams, includeGlobal, flagBase))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not extract baseline (%v), skipping baseline subtraction\n", err)
 		} else {
@@ -248,11 +241,12 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 // bucket. Fetching that bucket costs extra API calls, so it is only requested
 // when a file describes it.
 // baselineFiles returns the changed files plus the repo-relative file of every
-// team in scope and the given global config files. A team or the global scope
+// team in scope, plus the global config file (base, else default.yml) when
+// includeGlobal is set. A team or the global scope
 // can be in scope only through a file it references (lib/..., labels/...);
 // without its own file the baseline lacks that scope, so nothing in it could
 // be flagged as drift. Paths are slash-separated, as git expects.
-func baselineFiles(repoRoot string, changed []string, teams []parser.ParsedTeam, globals []string) []string {
+func baselineFiles(repoRoot string, changed []string, teams []parser.ParsedTeam, includeGlobal bool, base string) []string {
 	files := slices.Clone(changed)
 	add := func(f string) {
 		f = filepath.ToSlash(f)
@@ -265,8 +259,11 @@ func baselineFiles(repoRoot string, changed []string, teams []parser.ParsedTeam,
 			add(rel)
 		}
 	}
-	for _, g := range globals {
-		add(g)
+	if includeGlobal {
+		if base == "" {
+			base = "default.yml"
+		}
+		add(base)
 	}
 	return files
 }
