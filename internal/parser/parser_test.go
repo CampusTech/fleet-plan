@@ -1406,3 +1406,28 @@ func TestParseRepoAgentOptionsPathTraversal(t *testing.T) {
 		}
 	}
 }
+
+// A merged --base/--env file can carry inline keys next to path:. Silently
+// dropping them would hide the overlay's changes, so it is an error.
+func TestParseRepoAgentOptionsPathWithSiblings(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"fleets/t.yml": "name: T\nagent_options:\n  path: ../ao.yml\n  config:\n    options: {}\n",
+		"ao.yml":       "config: {}\n",
+	} {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo, err := ParseRepo(root, nil, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) == 0 {
+		t.Error("expected an error for path: with sibling keys")
+	}
+}

@@ -3,6 +3,7 @@ package diff
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -3988,12 +3989,74 @@ func TestDiffNoTeamControls(t *testing.T) {
 func TestDiffFlatLargeNumbers(t *testing.T) {
 	api := map[string]any{"command_line_flags": map[string]any{"logger_rotate_size": float64(26214400), "ratio": 0.5}}
 	proposed := map[string]any{"command_line_flags": map[string]any{"logger_rotate_size": 26214400, "ratio": 0.5}}
-	if got := diffFlat("agent_options", "", proposed, api, nil); len(got) != 0 {
+	if got := diffFlat("agent_options", "", proposed, api, nil, false); len(got) != 0 {
 		t.Errorf("got %+v, want no changes", got)
 	}
 	proposed["command_line_flags"].(map[string]any)["logger_rotate_size"] = 10485760
-	got := diffFlat("agent_options", "", proposed, api, nil)
+	got := diffFlat("agent_options", "", proposed, api, nil, false)
 	if len(got) != 1 || got[0].Old != "26214400" || got[0].New != "10485760" {
 		t.Errorf("got %+v, want 26214400 -> 10485760", got)
+	}
+}
+
+// Review follow-ups for team controls and agent_options.
+func TestDiffControlsEmptyAPIValue(t *testing.T) {
+	mdm := map[string]any{
+		"macos_updates": map[string]any{"minimum_version": "", "deadline": ""},
+		"macos_setup":   map[string]any{"script": ""},
+	}
+	controls := map[string]any{
+		// First-time OS update enforcement: Fleet reports "" until it is set.
+		"macos_updates": map[string]any{"minimum_version": "27.0.1"},
+		// Fleet keeps setup scripts by name and reports "" here: not a change.
+		"setup_experience": map[string]any{"macos_script": "../lib/setup.sh"},
+	}
+	got := diffControls(mdm, controls, teamControlsAPIKey)
+	if len(got) != 1 || got[0].Key != "macos_updates.minimum_version" || got[0].Old != "" || got[0].New != "27.0.1" {
+		t.Errorf("got %+v, want only macos_updates.minimum_version \"\" -> 27.0.1", got)
+	}
+}
+
+func TestDiffTeamConfigMissingAPISections(t *testing.T) {
+	team := parser.ParsedTeam{
+		Controls:     map[string]any{"enable_disk_encryption": true},
+		AgentOptions: map[string]any{"config": map[string]any{"options": map[string]any{"x": 1}}},
+	}
+	_, skipped := diffTeamConfig(map[string]any{}, team)
+	if !slices.Equal(skipped, []string{"agent_options", "controls"}) {
+		t.Errorf("skipped: got %v, want [agent_options controls]", skipped)
+	}
+}
+
+func TestDiffFlatRedactsSecrets(t *testing.T) {
+	api := map[string]any{"config": map[string]any{"options": map[string]any{
+		"aws_secret_access_key": "old-secret", "logger_tls_period": float64(10),
+	}}}
+	proposed := map[string]any{"config": map[string]any{"options": map[string]any{
+		"aws_secret_access_key": "new-secret", "logger_tls_period": 20,
+	}}}
+	got := diffFlat("agent_options", "", proposed, api, nil, false)
+	for _, c := range got {
+		if strings.Contains(c.Old+c.New, "secret") && c.Key != "config.options.aws_secret_access_key" {
+			t.Errorf("leaked: %+v", c)
+		}
+		if c.Key == "config.options.aws_secret_access_key" && (c.Old != "(redacted)" || c.New != "(redacted)") {
+			t.Errorf("secret not redacted: %+v", c)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("got %+v, want both keys reported as changed", got)
+	}
+}
+
+func TestDiffConfigGlobalControlsSkipScriptsAndProfiles(t *testing.T) {
+	api := map[string]any{"mdm": map[string]any{
+		"macos_settings": map[string]any{"custom_settings": []any{map[string]any{"path": "/abs/a.mobileconfig"}}},
+	}}
+	proposed := &parser.ParsedGlobal{Controls: map[string]any{
+		"macos_settings": map[string]any{"custom_settings": []any{map[string]any{"path": "./a.mobileconfig"}}},
+	}}
+	if changes, _ := diffConfig(api, proposed); len(changes) != 0 {
+		t.Errorf("got %+v, want profiles left to the profile diff", changes)
 	}
 }

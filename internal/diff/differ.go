@@ -1846,11 +1846,11 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]Conf
 	sections := map[string]map[string]any{
 		"org_settings":  proposed.OrgSettings,
 		"agent_options": proposed.AgentOptions,
-		"controls":      proposed.Controls,
+		"controls":      settingsControls(proposed.Controls),
 	}
 
 	for section, proposedMap := range sections {
-		if proposedMap == nil {
+		if len(proposedMap) == 0 {
 			continue
 		}
 
@@ -1877,7 +1877,7 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]Conf
 			continue
 		}
 
-		changes = append(changes, diffFlat(section, "", proposedMap, apiSection, nil)...)
+		changes = append(changes, diffFlat(section, "", proposedMap, apiSection, nil, false)...)
 	}
 
 	return changes, skipped
@@ -1933,7 +1933,7 @@ func diffTeamSettings(current, proposed map[string]any) ([]ConfigChange, []strin
 			continue
 		}
 
-		changes = append(changes, diffFlat("settings", section+".", proposedMap, apiSection, nil)...)
+		changes = append(changes, diffFlat("settings", section+".", proposedMap, apiSection, nil, false)...)
 	}
 
 	// flattenMap walks maps in random order; sort so output is stable.
@@ -1950,8 +1950,13 @@ func diffTeamSettings(current, proposed map[string]any) ([]ConfigChange, []strin
 // Leaves that reference an env var are skipped: Fleet substitutes them, so the
 // stored value never matches. So are keys the API reports no value for, since
 // "" cannot be told apart from "not reported" (agent_options sub-keys,
-// sso_settings, ...).
-func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, apiKey func(string) string) []ConfigChange {
+// sso_settings, ...). With reportEmpty, a key Fleet reports as "" is instead
+// an unset value being set (first-time macos_updates enforcement), unless the
+// proposed value is a file path, which Fleet stores by name and reports as "".
+//
+// Values under a secret-looking key are compared but rendered as (redacted):
+// the output is posted to MRs.
+func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, apiKey func(string) string, reportEmpty bool) []ConfigChange {
 	var changes []ConfigChange
 	flattenMap(proposed, "", func(key, proposedVal string) {
 		if containsEnvVar(proposedVal) || proposedVal == "<nil>" || proposedVal == "" {
@@ -1961,8 +1966,11 @@ func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, ap
 		if apiKey != nil {
 			lookup = apiKey(key)
 		}
-		apiVal := getNestedValue(apiSection, lookup)
-		if apiVal == "<nil>" || apiVal == "" {
+		apiVal, found := lookupNested(apiSection, lookup)
+		if !found || apiVal == "<nil>" {
+			return
+		}
+		if apiVal == "" && (!reportEmpty || strings.ContainsAny(proposedVal, `/\`)) {
 			return
 		}
 		compareAPI, compareProposed := apiVal, proposedVal
@@ -1971,6 +1979,9 @@ func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, ap
 			compareProposed = normalizeJSON(proposedVal)
 		}
 		if compareAPI != compareProposed {
+			if isSecretKey(key) {
+				apiVal, proposedVal = redact(apiVal), redact(proposedVal)
+			}
 			changes = append(changes, ConfigChange{
 				Section: section,
 				Key:     keyPrefix + key,
@@ -1982,6 +1993,22 @@ func diffFlat(section, keyPrefix string, proposed, apiSection map[string]any, ap
 	// flattenMap walks maps in random order; sort so output is stable.
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
 	return changes
+}
+
+// secretKeyPattern matches the last segment of a settings key that holds a
+// credential (aws_secret_access_key, enroll_secret, api_token, ...).
+var secretKeyPattern = regexp.MustCompile(`(?i)(secret|password|passwd|token|credential|private_key|access_key|api_key)`)
+
+func isSecretKey(key string) bool {
+	return secretKeyPattern.MatchString(key[strings.LastIndex(key, ".")+1:])
+}
+
+// redact hides a secret value, keeping "" so an unset value still reads as one.
+func redact(v string) string {
+	if v == "" {
+		return ""
+	}
+	return "(redacted)"
 }
 
 // controlsDiffedElsewhere are controls keys resolved into the profile and
@@ -2023,16 +2050,22 @@ func teamControlsAPIKey(key string) string {
 // with an mdm object: the team's for a real team, global config's for the
 // no-team bucket. apiKey renames keys for the team API; nil for global.
 func diffControls(mdm, controls map[string]any, apiKey func(string) string) []ConfigChange {
-	if len(controls) == 0 || mdm == nil {
+	rest := settingsControls(controls)
+	if len(rest) == 0 || mdm == nil {
 		return nil
 	}
+	return diffFlat("controls", "", rest, mdm, apiKey, true)
+}
+
+// settingsControls returns controls without the keys diffed elsewhere.
+func settingsControls(controls map[string]any) map[string]any {
 	rest := make(map[string]any, len(controls))
 	for k, v := range controls {
 		if !controlsDiffedElsewhere[k] {
 			rest[k] = v
 		}
 	}
-	return diffFlat("controls", "", rest, mdm, apiKey)
+	return rest
 }
 
 // diffTeamConfig returns a team's settings, controls, and agent_options
@@ -2040,11 +2073,21 @@ func diffControls(mdm, controls map[string]any, apiKey func(string) string) []Co
 // sub-keys that could not be diffed.
 func diffTeamConfig(current map[string]any, team parser.ParsedTeam) ([]ConfigChange, []string) {
 	changes, skipped := diffTeamSettings(current, team.Settings)
-	mdm, _ := current["mdm"].(map[string]any)
-	changes = append(changes, diffControls(mdm, team.Controls, teamControlsAPIKey)...)
-	if agent, ok := current["agent_options"].(map[string]any); ok && len(team.AgentOptions) > 0 {
-		changes = append(changes, diffFlat("agent_options", "", team.AgentOptions, agent, nil)...)
+	if len(settingsControls(team.Controls)) > 0 {
+		if mdm, ok := current["mdm"].(map[string]any); ok {
+			changes = append(changes, diffControls(mdm, team.Controls, teamControlsAPIKey)...)
+		} else {
+			skipped = append(skipped, "controls")
+		}
 	}
+	if len(team.AgentOptions) > 0 {
+		if agent, ok := current["agent_options"].(map[string]any); ok {
+			changes = append(changes, diffFlat("agent_options", "", team.AgentOptions, agent, nil, false)...)
+		} else {
+			skipped = append(skipped, "agent_options")
+		}
+	}
+	sort.Strings(skipped)
 	return changes, skipped
 }
 
@@ -2172,33 +2215,34 @@ func formatLeaf(v any) string {
 	return fmt.Sprint(v)
 }
 
-// getNestedValue retrieves a value from a nested map using a dot-separated key.
-// Slices are JSON-serialized to match flattenMap's output format.
-func getNestedValue(m map[string]any, key string) string {
+// lookupNested retrieves a value from a nested map using a dot-separated key,
+// and reports whether the key exists. Slices are JSON-serialized to match
+// flattenMap's output format.
+func lookupNested(m map[string]any, key string) (string, bool) {
 	parts := strings.Split(key, ".")
 	current := m
 	for i, part := range parts {
 		v, ok := current[part]
 		if !ok {
-			return ""
+			return "", false
 		}
 		if i == len(parts)-1 {
 			if slice, ok := v.([]any); ok {
 				b, err := json.Marshal(slice)
 				if err != nil {
-					return fmt.Sprint(v)
+					return fmt.Sprint(v), true
 				}
-				return string(b)
+				return string(b), true
 			}
-			return formatLeaf(v)
+			return formatLeaf(v), true
 		}
-		if next, ok := v.(map[string]any); ok {
-			current = next
-		} else {
-			return ""
+		next, ok := v.(map[string]any)
+		if !ok {
+			return "", false
 		}
+		current = next
 	}
-	return ""
+	return "", false
 }
 
 // ---------- Helpers ----------

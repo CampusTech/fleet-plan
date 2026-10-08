@@ -374,25 +374,23 @@ func decodeSettingsNode(nodes ...yaml.Node) map[string]any {
 
 // resolveAgentOptions follows an `agent_options: path:` reference, relative to
 // dir and confined to root, and returns the referenced file's mapping. A block
-// without path: is returned as is. On error it returns nil.
-func resolveAgentOptions(root, dir string, m map[string]any) (map[string]any, error) {
+// without path: is returned as is. Keys next to path: are an error rather than
+// silently dropped (a --base/--env merge can produce them).
+func resolveAgentOptions(root, dir, parentFile string, m map[string]any) (map[string]any, []ParseError) {
 	ref, ok := m["path"].(string)
 	if !ok {
 		return m, nil
 	}
-	resolved := filepath.Join(dir, ref)
-	if root != "" {
-		if err := safePath(root, resolved); err != nil {
-			return nil, err
-		}
+	if len(m) > 1 {
+		return nil, []ParseError{{File: parentFile, Message: "agent_options: path: cannot be combined with other keys"}}
 	}
-	data, err := os.ReadFile(resolved)
-	if err != nil {
-		return nil, fmt.Errorf("agent_options: %w", err)
+	data, _, errs := readYAMLRef(root, dir, ref, parentFile, "agent_options ")
+	if errs != nil {
+		return nil, errs
 	}
 	var out map[string]any
 	if err := yaml.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("agent_options %s: %w", ref, err)
+		return nil, []ParseError{{File: parentFile, Message: fmt.Sprintf("agent_options path reference %q: %s", ref, err)}}
 	}
 	return out, nil
 }
@@ -516,10 +514,8 @@ func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 		Controls:   decodeSettingsNode(rawMap["controls"]),
 		SourceFile: path,
 	}
-	agentOptions, err := resolveAgentOptions(root, filepath.Dir(path), decodeSettingsNode(raw.AgentOptions))
-	if err != nil {
-		errs = append(errs, ParseError{File: path, Message: err.Error()})
-	}
+	agentOptions, aoErrs := resolveAgentOptions(root, filepath.Dir(path), path, decodeSettingsNode(raw.AgentOptions))
+	errs = append(errs, aoErrs...)
 	team.AgentOptions = agentOptions
 
 	dir := filepath.Dir(path)
@@ -975,10 +971,8 @@ func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 	}
 	if v, ok := rawMap["agent_options"]; ok {
 		if m, ok := v.(map[string]any); ok {
-			resolved, err := resolveAgentOptions(root, dir, m)
-			if err != nil {
-				errs = append(errs, ParseError{File: path, Message: err.Error()})
-			}
+			resolved, aoErrs := resolveAgentOptions(root, dir, path, m)
+			errs = append(errs, aoErrs...)
 			global.AgentOptions = resolved
 		}
 	}
