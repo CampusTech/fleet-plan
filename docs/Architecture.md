@@ -142,7 +142,7 @@ When `--git` is active, the `git` package detects the CI platform and drives the
    - `git diff`: if the API call fails or the env vars are missing, fall back to diffing against the merge base locally.
    - Full diff: if git is unavailable, diff all teams (no file filtering).
 3. **Team scope inference:** `scope.go` maps changed file paths back to `teams/*.yml` entries so only affected teams are diffed.
-4. **Baseline drift:** the base-branch versions of the changed files of every in-scope team file, and of `default.yml` (or `--base`) when global config is in scope are extracted (`git show`) and diffed against Fleet too. A change that already appears there was not introduced by the MR/PR: it was made outside gitops (UI/API) or merged but not yet deployed. It stays in the output, since applying the MR applies it too, but is flagged `Drift` and rendered as *not from this change* (`"drift": true` in JSON).
+4. **Baseline drift:** fleet-plan extracts (`git show`) the base-branch versions of the changed files, every in-scope team file, and `default.yml` (or `--base`) when global config is in scope, and diffs them against Fleet too. A change that already appears there was not introduced by the MR/PR: it was made outside gitops (UI/API) or merged but not yet deployed. It stays in the output, since applying the MR applies it too, but is flagged `Drift` and rendered as *not from this change* (`"drift": true` in JSON).
 5. **Comment posting:** posts (or updates) a Markdown comment on the MR/PR. GitLab uses `FLEET_PLAN_BOT`, GitHub uses `GITHUB_TOKEN`.
 
 ---
