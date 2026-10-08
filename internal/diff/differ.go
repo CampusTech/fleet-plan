@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -2037,6 +2038,7 @@ func removeEmptyJSONValues(v any) any {
 			}
 			out[k] = removeEmptyJSONValues(val)
 		}
+		foldTeamsAlias(out)
 		return out
 	case []any:
 		out := make([]any, 0, len(x))
@@ -2056,6 +2058,25 @@ func removeEmptyJSONValues(v any) any {
 	default:
 		return v
 	}
+}
+
+// foldTeamsAlias treats `teams` as the legacy spelling of `fleets` (Fleet
+// 4.92 renamed it, e.g. on VPP tokens, and returns both with the same
+// members). A lone `teams` becomes `fleets`; a `teams` equal to `fleets` is
+// dropped. A `teams` that differs is left alone so the difference shows.
+func foldTeamsAlias(m map[string]any) {
+	teams, ok := m["teams"]
+	if !ok {
+		return
+	}
+	fleets, ok := m["fleets"]
+	switch {
+	case !ok:
+		m["fleets"] = teams
+	case !reflect.DeepEqual(teams, fleets):
+		return
+	}
+	delete(m, "teams")
 }
 
 // flattenMap recursively flattens a nested map into dot-separated key paths.
