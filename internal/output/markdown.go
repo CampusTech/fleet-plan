@@ -82,6 +82,9 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	if !HasChanges(results) {
 		sb.WriteString("No changes detected. Your branch matches the current Fleet state.\n")
+		if note := buildNotDiffedNote(results); note != "" {
+			fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
+		}
 		writeMarker(&sb, opts)
 		return sb.String()
 	}
@@ -192,6 +195,9 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	if warning := buildPermissionWarning(results); warning != "" {
 		fmt.Fprintf(&sb, "\n⚠️ %s\n", warning)
+	}
+	if note := buildNotDiffedNote(results); note != "" {
+		fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
 	}
 
 	if totalDrift > 0 {
@@ -342,6 +348,27 @@ func mdSummaryLine(added, modified, deleted int) string {
 	return "**" + strings.Join(parts, ", ") + "**"
 }
 
+// buildNotDiffedNote lists configured settings the plan could not compare:
+// keys Fleet does not report, and settings sections it did not return.
+// Either can be a rename on the Fleet side or a token that cannot read them,
+// so the note does not claim which.
+func buildNotDiffedNote(results []diff.DiffResult) string {
+	seen := make(map[string]bool)
+	for _, r := range results {
+		for _, s := range r.SkippedConfigSections {
+			seen[s] = true
+		}
+	}
+	if len(seen) == 0 {
+		return ""
+	}
+	keys := sortedKeys(seen)
+	for i, k := range keys {
+		keys[i] = mdCodeSpan(k)
+	}
+	return "Not diffed (Fleet does not report these, or the token cannot read them): " + strings.Join(keys, ", ")
+}
+
 func buildPermissionWarning(results []diff.DiffResult) string {
 	unavailable := make(map[string]bool)
 
@@ -350,9 +377,6 @@ func buildPermissionWarning(results []diff.DiffResult) string {
 			if resource, ok := permissionErrors[e]; ok {
 				unavailable[resource] = true
 			}
-		}
-		for _, s := range r.SkippedConfigSections {
-			unavailable[s] = true
 		}
 	}
 
