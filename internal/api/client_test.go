@@ -882,6 +882,7 @@ func TestAddMovedConfig(t *testing.T) {
 			wantEULA: "",
 		},
 		{name: "unreadable stays unreported", caStatus: 403, eulaStatus: 403},
+		{name: "Fleet Free (402) stays unreported", caStatus: 402, eulaStatus: 402},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -394,7 +394,7 @@ func buildGlobalOnlyNote(results []diff.DiffResult) string {
 		slices.Sort(teams[k])
 		parts = append(parts, fmt.Sprintf("%s (%s)", mdCodeSpan(k), strings.Join(teams[k], ", ")))
 	}
-	return "Global-only settings in fleet files (Fleet ignores them there; set them in `default.yml` or `fleets/unassigned.yml`): " + strings.Join(parts, ", ")
+	return "Global-only settings in fleet files (Fleet ignores them there; set them in `default.yml` or the unassigned (no-team) file): " + strings.Join(parts, ", ")
 }
 
 func buildPermissionWarning(results []diff.DiffResult) string {

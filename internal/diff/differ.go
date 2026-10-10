@@ -1843,6 +1843,8 @@ func validateLabels(team parser.ParsedTeam, labelMap map[string]api.Label, chang
 // Skips values containing "$" (env var placeholders that Fleet substitutes).
 func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]ConfigChange, []string) {
 	changes, skipped, orgSettings := diffEULA(apiConfig, proposed.OrgSettings)
+	ndesAdded, orgSettings := diffNDESAdded(apiConfig, orgSettings)
+	changes = append(changes, ndesAdded...)
 
 	sections := map[string]map[string]any{
 		"org_settings":  orgSettings,
@@ -1894,7 +1896,15 @@ func diffEULA(apiConfig, orgSettings map[string]any) ([]ConfigChange, []string, 
 	const key = "mdm.end_user_license_agreement"
 	mdm, _ := orgSettings["mdm"].(map[string]any)
 	p, _ := mdm["end_user_license_agreement"].(string)
-	if p == "" || containsEnvVar(p) {
+	if containsEnvVar(p) || len(orgSettings) == 0 {
+		return nil, nil, orgSettings
+	}
+	if p == "" {
+		// fleetctl gitops deletes the uploaded EULA when none is configured.
+		apiMDM, _ := apiConfig["mdm"].(map[string]any)
+		if name, _ := apiMDM["end_user_license_agreement"].(string); name != "" {
+			return []ConfigChange{{Section: "org_settings", Key: key, Old: name, New: ""}}, nil, orgSettings
+		}
 		return nil, nil, orgSettings
 	}
 	rest := maps.Clone(mdm)
@@ -1912,6 +1922,31 @@ func diffEULA(apiConfig, orgSettings map[string]any) ([]ConfigChange, []string, 
 		return nil, nil, orgSettings
 	}
 	return []ConfigChange{{Section: "org_settings", Key: key, Old: name, New: want}}, nil, orgSettings
+}
+
+// diffNDESAdded reports a configured NDES SCEP proxy that Fleet does not
+// have yet. The CA list was read (certificate_authorities is present) but
+// holds no NDES proxy, so every configured leaf is an addition rather than
+// "not reported". It returns orgSettings without the proxy in that case.
+func diffNDESAdded(apiConfig, orgSettings map[string]any) ([]ConfigChange, map[string]any) {
+	cas, _ := orgSettings["certificate_authorities"].(map[string]any)
+	ndes, _ := cas["ndes_scep_proxy"].(map[string]any)
+	apiCAs, read := apiConfig["certificate_authorities"].(map[string]any)
+	if ndes == nil || !read || apiCAs["ndes_scep_proxy"] != nil {
+		return nil, orgSettings
+	}
+	var changes []ConfigChange
+	flattenMap(ndes, "certificate_authorities.ndes_scep_proxy", func(key, val string) {
+		if val != "" && val != "<nil>" && !containsEnvVar(val) {
+			changes = append(changes, ConfigChange{Section: "org_settings", Key: key, New: val})
+		}
+	})
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
+	rest := maps.Clone(cas)
+	delete(rest, "ndes_scep_proxy")
+	orgSettings = maps.Clone(orgSettings)
+	orgSettings["certificate_authorities"] = rest
+	return changes, orgSettings
 }
 
 // teamSettingsSections maps a sub-key of a team's `settings:` block to the

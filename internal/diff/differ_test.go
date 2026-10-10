@@ -4088,6 +4088,30 @@ func TestDiffConfigEULA(t *testing.T) {
 	}
 }
 
+func TestDiffConfigEULARemoved(t *testing.T) {
+	// fleetctl gitops deletes the uploaded EULA when default.yml sets none.
+	proposed := &parser.ParsedGlobal{OrgSettings: map[string]any{"org_info": map[string]any{"org_name": "Campus"}}}
+	api := map[string]any{"org_info": map[string]any{"org_name": "Campus"}, "mdm": map[string]any{"end_user_license_agreement": "eula.pdf"}}
+	changes, _ := diffConfig(api, proposed)
+	want := []ConfigChange{{Section: "org_settings", Key: "mdm.end_user_license_agreement", Old: "eula.pdf", New: ""}}
+	if !reflect.DeepEqual(changes, want) {
+		t.Errorf("got %+v, want %+v", changes, want)
+	}
+}
+
+func TestDiffConfigNDESNotInFleet(t *testing.T) {
+	// The CA list was read and has no NDES proxy: configuring one is an add.
+	api := map[string]any{"certificate_authorities": map[string]any{}}
+	proposed := &parser.ParsedGlobal{OrgSettings: map[string]any{"certificate_authorities": map[string]any{
+		"ndes_scep_proxy": map[string]any{"url": "https://ca/scep", "password": "$NDES_PASSWORD"},
+	}}}
+	changes, skipped := diffConfig(api, proposed)
+	want := []ConfigChange{{Section: "org_settings", Key: "certificate_authorities.ndes_scep_proxy.url", Old: "", New: "https://ca/scep"}}
+	if !reflect.DeepEqual(changes, want) || len(skipped) != 0 {
+		t.Errorf("got %+v / %v, want %+v / none", changes, skipped, want)
+	}
+}
+
 func TestDiffConfigNDES(t *testing.T) {
 	api := map[string]any{"certificate_authorities": map[string]any{"ndes_scep_proxy": map[string]any{
 		"url": "https://ca/scep", "admin_url": "https://ca/admin", "username": "fleet",
