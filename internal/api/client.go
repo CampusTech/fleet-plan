@@ -538,6 +538,84 @@ func (c *Client) GetConfig(ctx context.Context) (map[string]any, error) {
 	return result, nil
 }
 
+// AddMovedConfig adds settings Fleet serves from their own endpoints rather
+// than /config, at the paths default.yml configures them under, so they can
+// be diffed like the rest of org_settings:
+//
+//   - certificate_authorities.ndes_scep_proxy: url, admin_url, username (the
+//     password is write-only). The other CA types are lists whose entries
+//     carry secrets, so they are left out.
+//   - mdm.end_user_license_agreement: the uploaded file's name, or "" when
+//     none is uploaded (Fleet answers 404).
+//
+// A setting the token cannot read is left out, and the diff reports it as
+// not diffed.
+func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
+	var cas struct {
+		CertificateAuthorities []struct {
+			ID   uint   `json:"id"`
+			Type string `json:"type"`
+		} `json:"certificate_authorities"`
+	}
+	err := c.get(ctx, "/api/v1/fleet/certificate_authorities", nil, &cas)
+	switch {
+	case err == nil:
+		// Read, so a missing NDES proxy diffs as one being added.
+		cfg["certificate_authorities"] = map[string]any{}
+	case !unreadable(err):
+		return fmt.Errorf("fetching certificate authorities: %w", err)
+	}
+	for _, ca := range cas.CertificateAuthorities {
+		if ca.Type != "ndes_scep_proxy" {
+			continue
+		}
+		var ndes struct {
+			URL      string `json:"url"`
+			AdminURL string `json:"admin_url"`
+			Username string `json:"username"`
+		}
+		err := c.get(ctx, fmt.Sprintf("/api/v1/fleet/certificate_authorities/%d", ca.ID), nil, &ndes)
+		if err != nil {
+			if unreadable(err) {
+				delete(cfg, "certificate_authorities")
+				break
+			}
+			return fmt.Errorf("fetching certificate authority %d: %w", ca.ID, err)
+		}
+		cfg["certificate_authorities"] = map[string]any{"ndes_scep_proxy": map[string]any{
+			"url": ndes.URL, "admin_url": ndes.AdminURL, "username": ndes.Username,
+		}}
+	}
+
+	var eula struct {
+		Name string `json:"name"`
+	}
+	err = c.get(ctx, "/api/v1/fleet/setup_experience/eula/metadata", nil, &eula)
+	var httpErr *HTTPError
+	switch {
+	case err == nil, errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound:
+	case unreadable(err):
+		return nil
+	default:
+		return fmt.Errorf("fetching EULA metadata: %w", err)
+	}
+	mdm, _ := cfg["mdm"].(map[string]any)
+	if mdm == nil {
+		mdm = map[string]any{}
+		cfg["mdm"] = mdm
+	}
+	mdm["end_user_license_agreement"] = eula.Name
+	return nil
+}
+
+// unreadable reports whether err means the setting cannot be read: no
+// permission, an endpoint this server lacks, or a Premium-only endpoint on
+// Fleet Free (402).
+func unreadable(err error) bool {
+	var httpErr *HTTPError
+	return isPermissionError(err) || errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusPaymentRequired
+}
+
 // GetTeams fetches all teams with pagination.
 func (c *Client) GetTeams(ctx context.Context) ([]Team, error) {
 	var all []Team
@@ -1035,6 +1113,9 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 		g.Go(func() error {
 			cfg, err := c.GetConfig(gctx)
 			if err != nil {
+				return err
+			}
+			if err := c.AddMovedConfig(gctx, cfg); err != nil {
 				return err
 			}
 			globalConfig = cfg

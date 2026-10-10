@@ -416,6 +416,14 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantNone: []string{"read access to: profiles", "profiles, software"},
 		},
 		{
+			name: "global-only controls in fleet files are flagged per key with their fleets",
+			results: []diff.DiffResult{
+				{Team: "Workstations", GlobalOnlyControls: []string{"controls.windows_migration_enabled"}},
+				{Team: "Zoom Rooms", GlobalOnlyControls: []string{"controls.windows_migration_enabled", "controls.apple_require_hardware_attestation"}},
+			},
+			wantAll: []string{"⚠️ Global-only settings in fleet files (Fleet ignores them there; set them in `default.yml` or the unassigned (no-team) file): `controls.apple_require_hardware_attestation` (Zoom Rooms), `controls.windows_migration_enabled` (Workstations, Zoom Rooms)"},
+		},
+		{
 			name: "settings Fleet does not report are listed as not diffed, not blamed on the token",
 			results: []diff.DiffResult{
 				{Team: "Workstations", SkippedConfigSections: []string{"controls.windows_migration_enabled"}, Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}}},
