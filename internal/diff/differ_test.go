@@ -4112,6 +4112,19 @@ func TestDiffConfigNDESNotInFleet(t *testing.T) {
 	}
 }
 
+func TestDiffConfigNDESNotInFleetRedactsSecrets(t *testing.T) {
+	// A literal password must not reach the MR comment.
+	api := map[string]any{"certificate_authorities": map[string]any{}}
+	proposed := &parser.ParsedGlobal{OrgSettings: map[string]any{"certificate_authorities": map[string]any{
+		"ndes_scep_proxy": map[string]any{"password": "hunter2"},
+	}}}
+	changes, _ := diffConfig(api, proposed)
+	want := []ConfigChange{{Section: "org_settings", Key: "certificate_authorities.ndes_scep_proxy.password", Old: "", New: "(redacted)"}}
+	if !reflect.DeepEqual(changes, want) {
+		t.Errorf("got %+v, want %+v", changes, want)
+	}
+}
+
 func TestDiffConfigNDES(t *testing.T) {
 	api := map[string]any{"certificate_authorities": map[string]any{"ndes_scep_proxy": map[string]any{
 		"url": "https://ca/scep", "admin_url": "https://ca/admin", "username": "fleet",

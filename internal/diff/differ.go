@@ -1937,9 +1937,13 @@ func diffNDESAdded(apiConfig, orgSettings map[string]any) ([]ConfigChange, map[s
 	}
 	var changes []ConfigChange
 	flattenMap(ndes, "certificate_authorities.ndes_scep_proxy", func(key, val string) {
-		if val != "" && val != "<nil>" && !containsEnvVar(val) {
-			changes = append(changes, ConfigChange{Section: "org_settings", Key: key, New: val})
+		if val == "" || val == "<nil>" || containsEnvVar(val) {
+			return
 		}
+		if isSecretKey(key) {
+			val = redact(val)
+		}
+		changes = append(changes, ConfigChange{Section: "org_settings", Key: key, New: val})
 	})
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
 	rest := maps.Clone(cas)
