@@ -153,9 +153,6 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d from %s: %s", e.StatusCode, e.URL, body)
 }
 
-// isPermissionError returns true if err is an HTTP 403 or 404: the endpoint
-// refused or does not exist. Only a 403 is certainly the token (e.g. gitops
-// role restrictions); a 404 can also be a server without the endpoint.
 // refusedStatus returns the HTTP status of err.
 func refusedStatus(err error) int {
 	var httpErr *HTTPError
@@ -165,12 +162,21 @@ func refusedStatus(err error) int {
 	return 0
 }
 
+// isPermissionError returns true if err is an HTTP 402, 403, or 404: Fleet
+// refused the resource, and the plan skips it instead of failing. Only a 403
+// is certainly the token (e.g. gitops role restrictions); a 404 can be a
+// server without the endpoint, and a 402 a Premium-only endpoint on Fleet
+// Free.
 func isPermissionError(err error) bool {
 	var httpErr *HTTPError
 	if !errors.As(err, &httpErr) {
 		return false
 	}
-	return httpErr.StatusCode == http.StatusForbidden || httpErr.StatusCode == http.StatusNotFound
+	switch httpErr.StatusCode {
+	case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound:
+		return true
+	}
+	return false
 }
 
 // maxProfileContentSize caps a downloaded configuration profile. It matches

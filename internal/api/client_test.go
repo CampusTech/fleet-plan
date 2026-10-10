@@ -1201,7 +1201,7 @@ func TestFetchAllNoTeamPermissionErrors(t *testing.T) {
 		fmt.Fprint(w, `{"fleet_maintained_apps":[]}`)
 	})
 	mux.HandleFunc("/api/v1/fleet/teams/0/policies", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusPaymentRequired) // Premium-only on Fleet Free
 	})
 	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -1222,8 +1222,8 @@ func TestFetchAllNoTeamPermissionErrors(t *testing.T) {
 	}
 	// The refusing status is kept: only a 403 is certainly the token.
 	nt := state.NoTeam
-	if nt.PoliciesUnavailable != 403 || nt.ProfilesUnavailable != 403 || nt.ScriptsUnavailable != 404 {
-		t.Errorf("unavailable statuses: got %+v, want 403/403/404", nt)
+	if nt.PoliciesUnavailable != 402 || nt.ProfilesUnavailable != 403 || nt.ScriptsUnavailable != 404 {
+		t.Errorf("unavailable statuses: got %+v, want 402/403/404", nt)
 	}
 }
 
