@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"reflect"
 	"regexp"
@@ -212,22 +213,22 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, globalMDM map[string]an
 		return
 	}
 
-	if current.PoliciesUnavailable {
-		result.Errors = append(result.Errors, "policies diff skipped: API token lacks permission to read no-team policies")
+	if current.PoliciesUnavailable != 0 {
+		result.Errors = append(result.Errors, skippedDiff("policies", current.PoliciesUnavailable, "no-team policies"))
 	} else {
 		result.Policies = diffPolicies(current.Policies, proposed.Policies)
 	}
 
-	if current.ProfilesUnavailable {
-		result.Errors = append(result.Errors, "profiles diff skipped: API token lacks permission to read profiles")
+	if current.ProfilesUnavailable != 0 {
+		result.Errors = append(result.Errors, skippedDiff("profiles", current.ProfilesUnavailable, "profiles"))
 	} else {
 		var warnings []string
 		result.Profiles, warnings = diffProfiles(current.Profiles, proposed.Profiles, changedFiles, cfg.profileEnricher)
 		result.Errors = append(result.Errors, warnings...)
 	}
 
-	if current.ScriptsUnavailable {
-		result.Errors = append(result.Errors, "scripts diff skipped: API token lacks permission to read scripts")
+	if current.ScriptsUnavailable != 0 {
+		result.Errors = append(result.Errors, skippedDiff("scripts", current.ScriptsUnavailable, "scripts"))
 	} else {
 		result.Scripts = diffScripts(current.Scripts, proposed.Scripts)
 	}
@@ -258,13 +259,13 @@ func diffNoTeam(result *DiffResult, current *api.NoTeam, globalMDM map[string]an
 	if cfg.baseline != nil {
 		if baseTeam, ok := findBaselineNoTeam(cfg.baseline); ok {
 			base := DiffResult{}
-			if !current.PoliciesUnavailable {
+			if current.PoliciesUnavailable == 0 {
 				base.Policies = diffPolicies(current.Policies, baseTeam.Policies)
 			}
-			if !current.ProfilesUnavailable {
+			if current.ProfilesUnavailable == 0 {
 				base.Profiles, _ = diffProfiles(current.Profiles, baseTeam.Profiles, nil, cfg.profileEnricher)
 			}
-			if !current.ScriptsUnavailable {
+			if current.ScriptsUnavailable == 0 {
 				base.Scripts = diffScripts(current.Scripts, baseTeam.Scripts)
 			}
 			result.Policies = markDrift(result.Policies, base.Policies)
@@ -430,8 +431,8 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			// can reuse the same enriched state.
 			enrichedSoftware := currentTeam.Software
 
-			if currentTeam.SoftwareUnavailable {
-				result.Errors = append(result.Errors, "software diff skipped: API token lacks permission to read software titles")
+			if currentTeam.SoftwareUnavailable != 0 {
+				result.Errors = append(result.Errors, skippedDiff("software", currentTeam.SoftwareUnavailable, "software titles"))
 			} else {
 				// Fleet's /teams API may return fleet_maintained_apps: null, or
 				// return a partial list (e.g., only macOS FMAs while Windows FMAs
@@ -450,16 +451,16 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				result.Errors = append(result.Errors, softwareWarnings...)
 			}
 
-			if currentTeam.ProfilesUnavailable {
-				result.Errors = append(result.Errors, "profiles diff skipped: API token lacks permission to read profiles")
+			if currentTeam.ProfilesUnavailable != 0 {
+				result.Errors = append(result.Errors, skippedDiff("profiles", currentTeam.ProfilesUnavailable, "profiles"))
 			} else {
 				var profileWarnings []string
 				result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles, changedFiles, cfg.profileEnricher)
 				result.Errors = append(result.Errors, profileWarnings...)
 			}
 
-			if currentTeam.ScriptsUnavailable {
-				result.Errors = append(result.Errors, "scripts diff skipped: API token lacks permission to read scripts")
+			if currentTeam.ScriptsUnavailable != 0 {
+				result.Errors = append(result.Errors, skippedDiff("scripts", currentTeam.ScriptsUnavailable, "scripts"))
 			} else {
 				result.Scripts = diffScripts(currentTeam.Scripts, proposedTeam.Scripts)
 			}
@@ -481,13 +482,13 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
 					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
 					baseDiff.Config, _ = diffTeamConfig(currentTeam.Settings, baseTeam)
-					if !currentTeam.SoftwareUnavailable {
+					if currentTeam.SoftwareUnavailable == 0 {
 						baseDiff.Software, _ = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
-					if !currentTeam.ProfilesUnavailable {
+					if currentTeam.ProfilesUnavailable == 0 {
 						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles, nil, cfg.profileEnricher)
 					}
-					if !currentTeam.ScriptsUnavailable {
+					if currentTeam.ScriptsUnavailable == 0 {
 						baseDiff.Scripts = diffScripts(currentTeam.Scripts, baseTeam.Scripts)
 					}
 					vlog(cfg.verbose, "[%s] baseline diff: policies=%s queries=%s software=%s",
@@ -1886,6 +1887,16 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]Conf
 	return changes, skipped
 }
 
+// skippedDiff says why a resource diff was skipped. Only a 403 is certainly
+// the token; a 404 can be a server without the endpoint, so for anything
+// else it states what Fleet returned and does not guess.
+func skippedDiff(kind string, status int, what string) string {
+	if status == http.StatusForbidden {
+		return kind + " diff skipped: API token lacks permission to read " + what
+	}
+	return fmt.Sprintf("%s diff skipped: Fleet returned HTTP %d for %s", kind, status, what)
+}
+
 // teamSettingsSections maps a sub-key of a team's `settings:` block to the
 // field on the Fleet team object that holds its live value. Everything Fleet
 // exposes on GET /teams is listed here; a sub-key that is not is reported as
@@ -1929,9 +1940,8 @@ func diffTeamSettings(current, proposed map[string]any) ([]ConfigChange, []strin
 		}
 		apiSection, ok := current[apiKey].(map[string]any)
 		if !ok {
-			// Fleet did not return this section (older server, or a token
-			// without permission to see it): say so rather than reporting
-			// every proposed key as a change.
+			// Fleet did not return this section: say so rather than
+			// reporting every proposed key as a change.
 			skipped = append(skipped, "settings."+section)
 			continue
 		}

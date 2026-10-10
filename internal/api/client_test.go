@@ -1220,8 +1220,10 @@ func TestFetchAllNoTeamPermissionErrors(t *testing.T) {
 	if state.NoTeam == nil {
 		t.Fatal("NoTeam: got nil")
 	}
-	if !state.NoTeam.PoliciesUnavailable || !state.NoTeam.ProfilesUnavailable || !state.NoTeam.ScriptsUnavailable {
-		t.Errorf("unavailable flags: got %+v, want all true", state.NoTeam)
+	// The refusing status is kept: only a 403 is certainly the token.
+	nt := state.NoTeam
+	if nt.PoliciesUnavailable != 403 || nt.ProfilesUnavailable != 403 || nt.ScriptsUnavailable != 404 {
+		t.Errorf("unavailable statuses: got %+v, want 403/403/404", nt)
 	}
 }
 

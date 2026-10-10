@@ -2812,9 +2812,9 @@ func TestDiffNoTeamUnavailableResources(t *testing.T) {
 		Teams:  []api.Team{},
 		Labels: []api.Label{},
 		NoTeam: &api.NoTeam{
-			PoliciesUnavailable: true,
-			ProfilesUnavailable: true,
-			ScriptsUnavailable:  true,
+			PoliciesUnavailable: 403,
+			ProfilesUnavailable: 403,
+			ScriptsUnavailable:  403,
 		},
 	}
 	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{
@@ -2840,6 +2840,27 @@ func TestDiffNoTeamUnavailableResources(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("missing %q in %v", want, r.Errors)
+		}
+	}
+}
+
+func TestDiffUnavailableBlamesTokenOnlyOn403(t *testing.T) {
+	// A 404 or 402 is as likely the server or its license as the token, so
+	// only a 403 may be reported as a token permission problem.
+	current := &api.FleetState{
+		Teams:  []api.Team{},
+		Labels: []api.Label{},
+		NoTeam: &api.NoTeam{PoliciesUnavailable: 403, ProfilesUnavailable: 404, ScriptsUnavailable: 402},
+	}
+	proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{Name: "No team", SourceFile: "teams/no-team.yml"}}}
+	got := Diff(current, proposed, nil, nil)[0].Errors
+	for _, want := range []string{
+		"policies diff skipped: API token lacks permission to read no-team policies",
+		"profiles diff skipped: Fleet returned HTTP 404 for profiles",
+		"scripts diff skipped: Fleet returned HTTP 402 for scripts",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("missing %q in %v", want, got)
 		}
 	}
 }
