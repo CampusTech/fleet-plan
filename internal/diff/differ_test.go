@@ -4022,9 +4022,85 @@ func TestDiffTeamConfigMissingAPISections(t *testing.T) {
 		Controls:     map[string]any{"enable_disk_encryption": true},
 		AgentOptions: map[string]any{"config": map[string]any{"options": map[string]any{"x": 1}}},
 	}
-	_, skipped := diffTeamConfig(map[string]any{}, team)
+	_, skipped, _ := diffTeamConfig(map[string]any{}, team)
 	if !slices.Equal(skipped, []string{"agent_options", "controls"}) {
 		t.Errorf("skipped: got %v, want [agent_options controls]", skipped)
+	}
+}
+
+func TestDiffTeamConfigGlobalOnlyControls(t *testing.T) {
+	// Fleet keeps these on global config only, so a fleet file setting them
+	// changes nothing: they are flagged, not diffed or listed as unreported.
+	team := parser.ParsedTeam{Controls: map[string]any{
+		"enable_disk_encryption":              true,
+		"windows_migration_enabled":           false,
+		"apple_require_hardware_attestation":  true,
+		"enable_turn_on_windows_mdm_manually": false,
+	}}
+	current := map[string]any{"mdm": map[string]any{"enable_disk_encryption": true}}
+	changes, skipped, globalOnly := diffTeamConfig(current, team)
+	if len(changes) != 0 || len(skipped) != 0 {
+		t.Errorf("changes %v, skipped %v: want none", changes, skipped)
+	}
+	want := []string{
+		"controls.apple_require_hardware_attestation",
+		"controls.enable_turn_on_windows_mdm_manually",
+		"controls.windows_migration_enabled",
+	}
+	if !slices.Equal(globalOnly, want) {
+		t.Errorf("globalOnly: got %v, want %v", globalOnly, want)
+	}
+}
+
+func TestDiffConfigEULA(t *testing.T) {
+	// Fleet reports the EULA by file name; default.yml points at a path.
+	tests := []struct {
+		name        string
+		mdm         map[string]any
+		wantChanges []ConfigChange
+		wantSkipped []string
+	}{
+		{"same file", map[string]any{"end_user_license_agreement": "eula.pdf"}, nil, nil},
+		{
+			"none uploaded",
+			map[string]any{"end_user_license_agreement": ""},
+			[]ConfigChange{{Section: "org_settings", Key: "mdm.end_user_license_agreement", Old: "", New: "eula.pdf"}},
+			nil,
+		},
+		{
+			"different file",
+			map[string]any{"end_user_license_agreement": "old.pdf"},
+			[]ConfigChange{{Section: "org_settings", Key: "mdm.end_user_license_agreement", Old: "old.pdf", New: "eula.pdf"}},
+			nil,
+		},
+		{"not reported", map[string]any{}, nil, []string{"org_settings.mdm.end_user_license_agreement"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proposed := &parser.ParsedGlobal{OrgSettings: map[string]any{
+				"mdm": map[string]any{"end_user_license_agreement": "./lib/eula.pdf"},
+			}}
+			changes, skipped := diffConfig(map[string]any{"mdm": tt.mdm}, proposed)
+			if !reflect.DeepEqual(changes, tt.wantChanges) || !slices.Equal(skipped, tt.wantSkipped) {
+				t.Errorf("got %+v / %v, want %+v / %v", changes, skipped, tt.wantChanges, tt.wantSkipped)
+			}
+		})
+	}
+}
+
+func TestDiffConfigNDES(t *testing.T) {
+	api := map[string]any{"certificate_authorities": map[string]any{"ndes_scep_proxy": map[string]any{
+		"url": "https://ca/scep", "admin_url": "https://ca/admin", "username": "fleet",
+	}}}
+	proposed := &parser.ParsedGlobal{OrgSettings: map[string]any{"certificate_authorities": map[string]any{
+		"ndes_scep_proxy": map[string]any{
+			"url": "https://ca/scep", "admin_url": "https://ca/new-admin", "username": "fleet", "password": "$NDES_PASSWORD",
+		},
+	}}}
+	changes, skipped := diffConfig(api, proposed)
+	want := []ConfigChange{{Section: "org_settings", Key: "certificate_authorities.ndes_scep_proxy.admin_url", Old: "https://ca/admin", New: "https://ca/new-admin"}}
+	if !reflect.DeepEqual(changes, want) || len(skipped) != 0 {
+		t.Errorf("got %+v / %v, want %+v / none", changes, skipped, want)
 	}
 }
 

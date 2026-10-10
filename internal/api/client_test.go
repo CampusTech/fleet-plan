@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -854,6 +855,80 @@ func TestGetConfig(t *testing.T) {
 				if _, ok := cfg[tt.wantKey]; !ok {
 					t.Errorf("expected key %q in config, got keys: %v", tt.wantKey, keys(cfg))
 				}
+			}
+		})
+	}
+}
+
+func TestAddMovedConfig(t *testing.T) {
+	// Fleet serves CAs and the EULA from their own endpoints, not /config;
+	// AddMovedConfig puts them where default.yml configures them.
+	tests := []struct {
+		name       string
+		caStatus   int
+		eulaStatus int
+		wantNDES   map[string]any // nil: certificate_authorities absent
+		wantEULA   any            // nil: key absent
+	}{
+		{
+			name:     "both reported",
+			caStatus: 200, eulaStatus: 200,
+			wantNDES: map[string]any{"url": "https://ca/scep", "admin_url": "https://ca/admin", "username": "fleet"},
+			wantEULA: "eula.pdf",
+		},
+		{
+			name: "no EULA uploaded is empty", caStatus: 200, eulaStatus: 404,
+			wantNDES: map[string]any{"url": "https://ca/scep", "admin_url": "https://ca/admin", "username": "fleet"},
+			wantEULA: "",
+		},
+		{name: "unreadable stays unreported", caStatus: 403, eulaStatus: 403},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				status := map[string]int{
+					"/api/v1/fleet/certificate_authorities":        tt.caStatus,
+					"/api/v1/fleet/certificate_authorities/7":      tt.caStatus,
+					"/api/v1/fleet/setup_experience/eula/metadata": tt.eulaStatus,
+				}[r.URL.Path]
+				if status == 0 {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					status = 500
+				}
+				if status != 200 {
+					w.WriteHeader(status)
+					return
+				}
+				switch r.URL.Path {
+				case "/api/v1/fleet/certificate_authorities":
+					w.Write([]byte(`{"certificate_authorities":[{"id":3,"name":"S","type":"smallstep"},{"id":7,"name":"NDES","type":"ndes_scep_proxy"}]}`))
+				case "/api/v1/fleet/certificate_authorities/7":
+					w.Write([]byte(`{"id":7,"type":"ndes_scep_proxy","name":"NDES","url":"https://ca/scep","admin_url":"https://ca/admin","username":"fleet"}`))
+				default:
+					w.Write([]byte(`{"name":"eula.pdf","sha256":"x"}`))
+				}
+			}))
+			defer ts.Close()
+
+			cfg := map[string]any{"mdm": map[string]any{"enable_disk_encryption": true}}
+			if err := testClient(t, ts, "tok").AddMovedConfig(context.Background(), cfg); err != nil {
+				t.Fatalf("AddMovedConfig: %v", err)
+			}
+			cas, _ := cfg["certificate_authorities"].(map[string]any)
+			if tt.wantNDES == nil {
+				if cas != nil {
+					t.Errorf("certificate_authorities: got %v, want absent", cas)
+				}
+			} else if got := cas["ndes_scep_proxy"]; !reflect.DeepEqual(got, tt.wantNDES) {
+				t.Errorf("ndes_scep_proxy: got %v, want %v", got, tt.wantNDES)
+			}
+			eula, found := cfg["mdm"].(map[string]any)["end_user_license_agreement"]
+			if tt.wantEULA == nil {
+				if found {
+					t.Errorf("EULA: got %v, want absent", eula)
+				}
+			} else if eula != tt.wantEULA {
+				t.Errorf("EULA: got %v, want %v", eula, tt.wantEULA)
 			}
 		})
 	}

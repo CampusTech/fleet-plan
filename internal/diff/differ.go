@@ -39,7 +39,8 @@ type DiffResult struct {
 	LabelChanges          ResourceDiff   // label definitions (global scope only)
 	Config                []ConfigChange // org_settings, agent_options, controls diffs
 	Errors                []string
-	SkippedConfigSections []string // configured sections or keys the API does not report (e.g. "agent_options", "controls.windows_migration_enabled")
+	SkippedConfigSections []string // configured sections or keys the API does not report (e.g. "agent_options", "settings.features.foo")
+	GlobalOnlyControls    []string // global-only controls a fleet file sets, which Fleet ignores there (e.g. "controls.windows_migration_enabled")
 }
 
 // ConfigChange represents a change in a top-level config section.
@@ -423,7 +424,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 
 			result.Policies = diffPolicies(currentTeam.Policies, proposedTeam.Policies)
 			result.Queries = diffQueries(currentTeam.Queries, proposedTeam.Queries)
-			result.Config, result.SkippedConfigSections = diffTeamConfig(currentTeam.Settings, proposedTeam)
+			result.Config, result.SkippedConfigSections, result.GlobalOnlyControls = diffTeamConfig(currentTeam.Settings, proposedTeam)
 
 			// enrichedSoftware holds the API software state with fleet-maintained
 			// app scripts populated. Hoisted here so the baseline drift pass
@@ -480,7 +481,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					baseDiff := DiffResult{}
 					baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
 					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
-					baseDiff.Config, _ = diffTeamConfig(currentTeam.Settings, baseTeam)
+					baseDiff.Config, _, _ = diffTeamConfig(currentTeam.Settings, baseTeam)
 					if !currentTeam.SoftwareUnavailable {
 						baseDiff.Software, _ = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
@@ -1841,11 +1842,10 @@ func validateLabels(team parser.ParsedTeam, labelMap map[string]api.Label, chang
 // global config sections from default.yml. Returns a list of config changes.
 // Skips values containing "$" (env var placeholders that Fleet substitutes).
 func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]ConfigChange, []string) {
-	var changes []ConfigChange
-	var skipped []string
+	changes, skipped, orgSettings := diffEULA(apiConfig, proposed.OrgSettings)
 
 	sections := map[string]map[string]any{
-		"org_settings":  proposed.OrgSettings,
+		"org_settings":  orgSettings,
 		"agent_options": proposed.AgentOptions,
 		"controls":      settingsControls(proposed.Controls),
 	}
@@ -1884,6 +1884,34 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]Conf
 	}
 
 	return changes, skipped
+}
+
+// diffEULA compares org_settings.mdm.end_user_license_agreement on its own:
+// default.yml gives a path, Fleet reports the uploaded file's name, and ""
+// there means no EULA is uploaded rather than "not reported". It returns
+// orgSettings without the key, for the generic diff of the rest.
+func diffEULA(apiConfig, orgSettings map[string]any) ([]ConfigChange, []string, map[string]any) {
+	const key = "mdm.end_user_license_agreement"
+	mdm, _ := orgSettings["mdm"].(map[string]any)
+	p, _ := mdm["end_user_license_agreement"].(string)
+	if p == "" || containsEnvVar(p) {
+		return nil, nil, orgSettings
+	}
+	rest := maps.Clone(mdm)
+	delete(rest, "end_user_license_agreement")
+	orgSettings = maps.Clone(orgSettings)
+	orgSettings["mdm"] = rest
+
+	apiMDM, _ := apiConfig["mdm"].(map[string]any)
+	name, found := apiMDM["end_user_license_agreement"].(string)
+	if !found {
+		return nil, []string{"org_settings." + key}, orgSettings
+	}
+	want := p[strings.LastIndexAny(p, `/\`)+1:]
+	if name == want {
+		return nil, nil, orgSettings
+	}
+	return []ConfigChange{{Section: "org_settings", Key: key, Old: name, New: want}}, nil, orgSettings
 }
 
 // teamSettingsSections maps a sub-key of a team's `settings:` block to the
@@ -2083,14 +2111,38 @@ func settingsControls(controls map[string]any) map[string]any {
 	return rest
 }
 
+// globalOnlyControls are controls keys Fleet stores on global config only
+// (AppConfig.MDM; a team's mdm object has no such field). A fleet file may
+// set them without error, but they have no effect there.
+var globalOnlyControls = map[string]bool{
+	"windows_enabled_and_configured":      true,
+	"windows_migration_enabled":           true,
+	"enable_turn_on_windows_mdm_manually": true,
+	"windows_entra_tenant_ids":            true,
+	"windows_entra_client_ids":            true,
+	"android_enabled_and_configured":      true,
+	"apple_require_hardware_attestation":  true,
+	"apple_account_provisioning":          true,
+}
+
 // diffTeamConfig returns a team's settings, controls, and agent_options
-// changes against the raw team object from GET /teams, plus the settings
-// sub-keys that could not be diffed.
-func diffTeamConfig(current map[string]any, team parser.ParsedTeam) ([]ConfigChange, []string) {
+// changes against the raw team object from GET /teams, the settings
+// sub-keys that could not be diffed, and the global-only controls the team
+// file sets ("controls.<key>").
+func diffTeamConfig(current map[string]any, team parser.ParsedTeam) ([]ConfigChange, []string, []string) {
 	changes, skipped := diffTeamSettings(current, team.Settings)
-	if len(settingsControls(team.Controls)) > 0 {
+	var globalOnly []string
+	controls := maps.Clone(team.Controls)
+	for k := range controls {
+		if globalOnlyControls[k] {
+			globalOnly = append(globalOnly, "controls."+k)
+			delete(controls, k)
+		}
+	}
+	sort.Strings(globalOnly)
+	if len(settingsControls(controls)) > 0 {
 		if mdm, ok := current["mdm"].(map[string]any); ok {
-			c, nr := diffControls(mdm, team.Controls, teamControlsAPIKey)
+			c, nr := diffControls(mdm, controls, teamControlsAPIKey)
 			changes, skipped = append(changes, c...), append(skipped, nr...)
 		} else {
 			skipped = append(skipped, "controls")
@@ -2105,7 +2157,7 @@ func diffTeamConfig(current map[string]any, team parser.ParsedTeam) ([]ConfigCha
 		}
 	}
 	sort.Strings(skipped)
-	return changes, skipped
+	return changes, skipped, globalOnly
 }
 
 // containsEnvVar returns true if the string contains a $ (env var placeholder).
