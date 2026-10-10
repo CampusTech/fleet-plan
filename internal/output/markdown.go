@@ -207,6 +207,9 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 	if note := buildNotDiffedNote(results); note != "" {
 		fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
 	}
+	if note := buildLabelCountsNote(results); note != "" {
+		fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
+	}
 
 	if totalDrift > 0 {
 		fmt.Fprintf(&sb, "\n> **NOTE:** %d %s marked _not from this change_ already %s between the base branch and Fleet: made outside gitops, or merged but not yet deployed. Merging this applies %s too.\n",
@@ -357,9 +360,9 @@ func mdSummaryLine(added, modified, deleted int) string {
 }
 
 // buildNotDiffedNote lists configured settings the plan could not compare:
-// keys Fleet does not report, and settings sections it did not return.
-// Either can be a rename on the Fleet side or a token that cannot read them,
-// so the note does not claim which.
+// keys Fleet does not report, and settings sections it did not return. The
+// cause (a rename, a key Fleet does not support, a restricted token) is not
+// known, so the note states only what Fleet returned.
 func buildNotDiffedNote(results []diff.DiffResult) string {
 	seen := make(map[string]bool)
 	for _, r := range results {
@@ -374,7 +377,7 @@ func buildNotDiffedNote(results []diff.DiffResult) string {
 	for i, k := range keys {
 		keys[i] = mdCodeSpan(k)
 	}
-	return "Not diffed (Fleet does not report these, or the token cannot read them): " + strings.Join(keys, ", ")
+	return "Not diffed (Fleet did not report these): " + strings.Join(keys, ", ")
 }
 
 // buildGlobalOnlyNote lists global-only controls set in fleet files, which
@@ -397,6 +400,27 @@ func buildGlobalOnlyNote(results []diff.DiffResult) string {
 	return "Global-only settings in fleet files (Fleet ignores them there; set them in `default.yml` or the unassigned (no-team) file): " + strings.Join(parts, ", ")
 }
 
+// buildLabelCountsNote explains a labels table without host counts: Fleet
+// reported 0 for every label. That may be no matching hosts or a token that
+// cannot count them, so it is stated, not blamed on the token.
+func buildLabelCountsNote(results []diff.DiffResult) string {
+	hasLabels := false
+	for _, r := range results {
+		for _, l := range r.Labels.Valid {
+			if l.HostCount > 0 {
+				return ""
+			}
+			hasLabels = true
+		}
+	}
+	if !hasLabels {
+		return ""
+	}
+	return "Label host counts hidden: Fleet reported 0 hosts for every label."
+}
+
+// buildPermissionWarning lists resources Fleet refused with a 403, the one
+// status that certainly means the token lacks access.
 func buildPermissionWarning(results []diff.DiffResult) string {
 	unavailable := make(map[string]bool)
 
@@ -406,19 +430,6 @@ func buildPermissionWarning(results []diff.DiffResult) string {
 				unavailable[resource] = true
 			}
 		}
-	}
-
-	hasLabels, hasLabelCounts := false, false
-	for _, r := range results {
-		for _, l := range r.Labels.Valid {
-			hasLabels = true
-			if l.HostCount > 0 {
-				hasLabelCounts = true
-			}
-		}
-	}
-	if hasLabels && !hasLabelCounts {
-		unavailable["label host counts"] = true
 	}
 
 	if len(unavailable) == 0 {

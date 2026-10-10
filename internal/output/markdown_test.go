@@ -384,8 +384,36 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			results: []diff.DiffResult{
 				{Team: "(global)", SkippedConfigSections: []string{"controls.windows_migration_enabled"}},
 			},
-			wantAll:  []string{"No changes detected", "ℹ️ Not diffed (Fleet does not report these, or the token cannot read them): `controls.windows_migration_enabled`"},
+			wantAll:  []string{"No changes detected", "ℹ️ Not diffed (Fleet did not report these): `controls.windows_migration_enabled`"},
 			wantNone: []string{"| Change | Team"},
+		},
+		{
+			// Every label at 0 hosts may just be no matching hosts: say what
+			// Fleet reported, do not blame the token.
+			name: "zero label host counts are stated, not blamed on the token",
+			results: []diff.DiffResult{{
+				Team:     "Workstations",
+				Labels:   diff.LabelValidation{Valid: []diff.LabelRef{{Name: "pilots"}}},
+				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
+			}},
+			wantAll:  []string{"ℹ️ Label host counts hidden: Fleet reported 0 hosts for every label."},
+			wantNone: []string{"Token lacks read access"},
+		},
+		{
+			name: "only a 403 is reported as a token permission problem",
+			results: []diff.DiffResult{{
+				Team: "Workstations",
+				Errors: []string{
+					"software diff skipped: API token lacks permission to read software titles",
+					"profiles diff skipped: Fleet returned HTTP 404 for profiles",
+				},
+				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
+			}},
+			wantAll: []string{
+				"⚠️ Token lacks read access to: software.",
+				"| ⚠️ | Workstations | | | profiles diff skipped: Fleet returned HTTP 404 for profiles |",
+			},
+			wantNone: []string{"read access to: profiles", "profiles, software"},
 		},
 		{
 			name: "global-only controls in fleet files are flagged per key with their fleets",
@@ -401,7 +429,7 @@ func TestRenderDiffMarkdown(t *testing.T) {
 				{Team: "Workstations", SkippedConfigSections: []string{"controls.windows_migration_enabled"}, Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}}},
 				{Team: "(global)", SkippedConfigSections: []string{"org_settings.mdm.end_user_license_agreement", "controls.windows_migration_enabled"}},
 			},
-			wantAll:  []string{"ℹ️ Not diffed (Fleet does not report these, or the token cannot read them): `controls.windows_migration_enabled`, `org_settings.mdm.end_user_license_agreement`"},
+			wantAll:  []string{"ℹ️ Not diffed (Fleet did not report these): `controls.windows_migration_enabled`, `org_settings.mdm.end_user_license_agreement`"},
 			wantNone: []string{"Token lacks read access"},
 		},
 		{

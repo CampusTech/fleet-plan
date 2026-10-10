@@ -153,14 +153,30 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d from %s: %s", e.StatusCode, e.URL, body)
 }
 
-// isPermissionError returns true if err is an HTTP 403 or 404, which indicates
-// the API token lacks access to this endpoint (e.g. gitops role restrictions).
+// refusedStatus returns the HTTP status of err.
+func refusedStatus(err error) int {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode
+	}
+	return 0
+}
+
+// isPermissionError returns true if err is an HTTP 402, 403, or 404: Fleet
+// refused the resource, and the plan skips it instead of failing. Only a 403
+// is certainly the token (e.g. gitops role restrictions); a 404 can be a
+// server without the endpoint, and a 402 a Premium-only endpoint on Fleet
+// Free.
 func isPermissionError(err error) bool {
 	var httpErr *HTTPError
 	if !errors.As(err, &httpErr) {
 		return false
 	}
-	return httpErr.StatusCode == http.StatusForbidden || httpErr.StatusCode == http.StatusNotFound
+	switch httpErr.StatusCode {
+	case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound:
+		return true
+	}
+	return false
 }
 
 // maxProfileContentSize caps a downloaded configuration profile. It matches
@@ -189,12 +205,13 @@ type FleetState struct {
 // absent too — Fleet only reports configured packages through the teams list,
 // which excludes this bucket.
 type NoTeam struct {
-	Policies            []Policy
-	Profiles            []Profile
-	Scripts             []Script
-	PoliciesUnavailable bool
-	ProfilesUnavailable bool
-	ScriptsUnavailable  bool
+	Policies []Policy
+	Profiles []Profile
+	Scripts  []Script
+	// HTTP status (403 or 404) that refused each resource; 0 when it was read.
+	PoliciesUnavailable int
+	ProfilesUnavailable int
+	ScriptsUnavailable  int
 }
 
 // FetchOptions selects the optional scopes FetchAll retrieves. Both cost extra
@@ -218,9 +235,9 @@ type Team struct {
 	Profiles            []Profile // populated by GetProfiles
 	Scripts             []Script  `json:"-"` // populated by GetScripts
 	SoftwareTitles      []SoftwareTitle
-	SoftwareUnavailable bool // true when GetSoftware returned 403/404 (token lacks permission)
-	ProfilesUnavailable bool // true when GetProfiles returned 403/404 (token lacks permission)
-	ScriptsUnavailable  bool // true when GetScripts returned 403/404 (token lacks permission)
+	SoftwareUnavailable int // HTTP status (403/404) that refused GetSoftware; 0 when read
+	ProfilesUnavailable int // HTTP status (403/404) that refused GetProfiles; 0 when read
+	ScriptsUnavailable  int // HTTP status (403/404) that refused GetScripts; 0 when read
 
 	// Settings holds the raw team object as returned by the API, so the
 	// settings blocks a team YAML configures (webhook_settings,
@@ -545,7 +562,7 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 	case err == nil:
 		// Read, so a missing NDES proxy diffs as one being added.
 		cfg["certificate_authorities"] = map[string]any{}
-	case !unreadable(err):
+	case !isPermissionError(err):
 		return fmt.Errorf("fetching certificate authorities: %w", err)
 	}
 	for _, ca := range cas.CertificateAuthorities {
@@ -559,7 +576,7 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 		}
 		err := c.get(ctx, fmt.Sprintf("/api/v1/fleet/certificate_authorities/%d", ca.ID), nil, &ndes)
 		if err != nil {
-			if unreadable(err) {
+			if isPermissionError(err) {
 				delete(cfg, "certificate_authorities")
 				break
 			}
@@ -577,7 +594,7 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 	var httpErr *HTTPError
 	switch {
 	case err == nil, errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound:
-	case unreadable(err):
+	case isPermissionError(err):
 		return nil
 	default:
 		return fmt.Errorf("fetching EULA metadata: %w", err)
@@ -589,14 +606,6 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 	}
 	mdm["end_user_license_agreement"] = eula.Name
 	return nil
-}
-
-// unreadable reports whether err means the setting cannot be read: no
-// permission, an endpoint this server lacks, or a Premium-only endpoint on
-// Fleet Free (402).
-func unreadable(err error) bool {
-	var httpErr *HTTPError
-	return isPermissionError(err) || errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusPaymentRequired
 }
 
 // GetTeams fetches all teams with pagination.
@@ -1133,7 +1142,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 				if !isPermissionError(err) {
 					return err
 				}
-				noTeam.PoliciesUnavailable = true
+				noTeam.PoliciesUnavailable = refusedStatus(err)
 				return nil
 			}
 			noTeam.Policies = policies
@@ -1145,7 +1154,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 				if !isPermissionError(err) {
 					return err
 				}
-				noTeam.ProfilesUnavailable = true
+				noTeam.ProfilesUnavailable = refusedStatus(err)
 				return nil
 			}
 			noTeam.Profiles = profiles
@@ -1157,7 +1166,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 				if !isPermissionError(err) {
 					return err
 				}
-				noTeam.ScriptsUnavailable = true
+				noTeam.ScriptsUnavailable = refusedStatus(err)
 				return nil
 			}
 			noTeam.Scripts = scripts
@@ -1171,11 +1180,11 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 		policies            []Policy
 		queries             []Query
 		profiles            []Profile
-		profilesUnavailable bool
+		profilesUnavailable int
 		softwareTitles      []SoftwareTitle
-		softwareUnavailable bool
+		softwareUnavailable int
 		scripts             []Script
-		scriptsUnavailable  bool
+		scriptsUnavailable  int
 	}
 	teamPartials := make([]teamPartial, len(teams))
 
@@ -1209,7 +1218,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 				if !isPermissionError(err) {
 					return err
 				}
-				teamPartials[idx].profilesUnavailable = true
+				teamPartials[idx].profilesUnavailable = refusedStatus(err)
 				profiles = nil
 			}
 			teamPartials[idx].profiles = profiles
@@ -1222,7 +1231,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 				if !isPermissionError(err) {
 					return err
 				}
-				teamPartials[idx].softwareUnavailable = true
+				teamPartials[idx].softwareUnavailable = refusedStatus(err)
 				softwareTitles = nil
 			}
 			teamPartials[idx].softwareTitles = softwareTitles
@@ -1235,7 +1244,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 				if !isPermissionError(err) {
 					return err
 				}
-				teamPartials[idx].scriptsUnavailable = true
+				teamPartials[idx].scriptsUnavailable = refusedStatus(err)
 				scripts = nil
 			}
 			teamPartials[idx].scripts = scripts
@@ -1268,7 +1277,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 	}
 
 	if noTeam != nil {
-		if !noTeam.ScriptsUnavailable && len(noTeam.Scripts) > 0 {
+		if noTeam.ScriptsUnavailable == 0 && len(noTeam.Scripts) > 0 {
 			c.EnrichScriptContents(ctx, noTeam.Scripts)
 		}
 		state.NoTeam = noTeam
@@ -1276,7 +1285,7 @@ func (c *Client) FetchAll(ctx context.Context, opts ...FetchOptions) (*FleetStat
 
 	// Enrich script contents (second pass, needs script IDs from first pass)
 	for i := range teamResults {
-		if !teamResults[i].ScriptsUnavailable && len(teamResults[i].Scripts) > 0 {
+		if teamResults[i].ScriptsUnavailable == 0 && len(teamResults[i].Scripts) > 0 {
 			c.EnrichScriptContents(ctx, teamResults[i].Scripts)
 		}
 	}
