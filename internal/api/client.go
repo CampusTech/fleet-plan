@@ -562,7 +562,7 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 	case err == nil:
 		// Read, so a missing NDES proxy diffs as one being added.
 		cfg["certificate_authorities"] = map[string]any{}
-	case !unreadable(err):
+	case !isPermissionError(err):
 		return fmt.Errorf("fetching certificate authorities: %w", err)
 	}
 	for _, ca := range cas.CertificateAuthorities {
@@ -576,7 +576,7 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 		}
 		err := c.get(ctx, fmt.Sprintf("/api/v1/fleet/certificate_authorities/%d", ca.ID), nil, &ndes)
 		if err != nil {
-			if unreadable(err) {
+			if isPermissionError(err) {
 				delete(cfg, "certificate_authorities")
 				break
 			}
@@ -594,7 +594,7 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 	var httpErr *HTTPError
 	switch {
 	case err == nil, errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound:
-	case unreadable(err):
+	case isPermissionError(err):
 		return nil
 	default:
 		return fmt.Errorf("fetching EULA metadata: %w", err)
@@ -606,14 +606,6 @@ func (c *Client) AddMovedConfig(ctx context.Context, cfg map[string]any) error {
 	}
 	mdm["end_user_license_agreement"] = eula.Name
 	return nil
-}
-
-// unreadable reports whether err means the setting cannot be read: no
-// permission, an endpoint this server lacks, or a Premium-only endpoint on
-// Fleet Free (402).
-func unreadable(err error) bool {
-	var httpErr *HTTPError
-	return isPermissionError(err) || errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusPaymentRequired
 }
 
 // GetTeams fetches all teams with pagination.
