@@ -2,6 +2,8 @@ package output
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -82,6 +84,9 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	if !HasChanges(results) {
 		sb.WriteString("No changes detected. Your branch matches the current Fleet state.\n")
+		if note := buildGlobalOnlyNote(results); note != "" {
+			fmt.Fprintf(&sb, "\n⚠️ %s\n", note)
+		}
 		if note := buildNotDiffedNote(results); note != "" {
 			fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
 		}
@@ -195,6 +200,9 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	if warning := buildPermissionWarning(results); warning != "" {
 		fmt.Fprintf(&sb, "\n⚠️ %s\n", warning)
+	}
+	if note := buildGlobalOnlyNote(results); note != "" {
+		fmt.Fprintf(&sb, "\n⚠️ %s\n", note)
 	}
 	if note := buildNotDiffedNote(results); note != "" {
 		fmt.Fprintf(&sb, "\nℹ️ %s\n", note)
@@ -367,6 +375,26 @@ func buildNotDiffedNote(results []diff.DiffResult) string {
 		keys[i] = mdCodeSpan(k)
 	}
 	return "Not diffed (Fleet does not report these, or the token cannot read them): " + strings.Join(keys, ", ")
+}
+
+// buildGlobalOnlyNote lists global-only controls set in fleet files, which
+// Fleet accepts there but ignores, with the fleets that set each one.
+func buildGlobalOnlyNote(results []diff.DiffResult) string {
+	teams := make(map[string][]string)
+	for _, r := range results {
+		for _, k := range r.GlobalOnlyControls {
+			teams[k] = append(teams[k], r.Team)
+		}
+	}
+	if len(teams) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, k := range slices.Sorted(maps.Keys(teams)) {
+		slices.Sort(teams[k])
+		parts = append(parts, fmt.Sprintf("%s (%s)", mdCodeSpan(k), strings.Join(teams[k], ", ")))
+	}
+	return "Global-only settings in fleet files (Fleet ignores them there; set them in `default.yml` or the unassigned (no-team) file): " + strings.Join(parts, ", ")
 }
 
 func buildPermissionWarning(results []diff.DiffResult) string {
